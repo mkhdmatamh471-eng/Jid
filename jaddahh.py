@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-
+import pytz
+from datetime import datetime
 # --- إعداد السجلات ---
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("pyrogram").setLevel(logging.ERROR)
@@ -85,20 +86,73 @@ async def notify_all(detected_district, msg):
     customer = msg.from_user
     bot_username = "Mishweribot"
 
+    # رابط المراسلة
     gate_contact = f"https://t.me/{bot_username}?start=contact_{customer.id if customer else 0}"
-    chan_buttons = [[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]
+    
+    # 1. إرسال للقناة (عام)
     chan_text = f"🎯 <b>طلب مشوار جديد</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n📝 <b>التفاصيل:</b>\n<i>{content}</i>"
-    user_text = f"🎯 <b>طلب جديد!</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n👤 <b>العميل:</b> {customer.first_name if customer else 'مخفي'}\n📝 <b>النص:</b>\n<i>{content}</i>"
-
     try:
-        await bot_sender.send_message(chat_id=CHANNEL_ID, text=chan_text, reply_markup=InlineKeyboardMarkup(chan_buttons), parse_mode=ParseMode.HTML)
+        await bot_sender.send_message(
+            chat_id=CHANNEL_ID, 
+            text=chan_text, 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]), 
+            parse_mode=ParseMode.HTML
+        )
     except: pass
 
-    for user_id in TARGET_USERS:
+    # 2. جلب السائقين المشتركين حالياً من قاعدة البيانات
+    active_drivers = await get_active_drivers()
+    
+    user_text = f"🎯 <b>طلب جديد (للمشتركين فقط)!</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n👤 <b>العميل:</b> {customer.first_name if customer else 'مخفي'}\n📝 <b>النص:</b>\n<i>{content}</i>"
+
+    # 3. الإرسال لكل سائق اشتراكه سارٍ
+    for driver_id in active_drivers:
         try:
-            await bot_sender.send_message(chat_id=user_id, text=user_text, reply_markup=InlineKeyboardMarkup(chan_buttons), parse_mode=ParseMode.HTML)
-            await asyncio.sleep(0.3)
-        except: continue
+            await bot_sender.send_message(
+                chat_id=driver_id, 
+                text=user_text, 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]), 
+                parse_mode=ParseMode.HTML
+            )
+            await asyncio.sleep(0.1) # تأخير بسيط لتجنب حظر التليجرام
+        except:
+            continue
+
+
+async def get_active_drivers():
+    conn = get_db_connection()
+    if not conn: return []
+    
+    active_drivers = []
+    try:
+        def query():
+            ksa_tz = pytz.timezone('Asia/Riyadh')
+            now_ksa = datetime.now(ksa_tz)
+            
+            with conn.cursor() as cur:
+                # جلب السائقين الذين لديهم تاريخ انتهاء مستقبلي
+                cur.execute("""
+                    SELECT user_id, subscription_expiry 
+                    FROM users 
+                    WHERE role = 'driver' 
+                    AND subscription_expiry IS NOT NULL
+                """)
+                rows = cur.fetchall()
+                
+                drivers = []
+                for row in rows:
+                    u_id, expiry = row
+                    # التأكد من أن الاشتراك لم ينتهِ
+                    if expiry and expiry > now_ksa:
+                        drivers.append(u_id)
+                return drivers
+
+        active_drivers = await asyncio.to_thread(query)
+    except Exception as e:
+        print(f"❌ Error fetching active drivers: {e}")
+    finally:
+        release_db_connection(conn)
+    return active_drivers
 
 @user_app.on_message(filters.group)
 async def handle_new_message(client, message):
