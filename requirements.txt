@@ -1,9 +1,5 @@
-telethon
+psycopg2-binary
 pyrogram
 tgcrypto
-flask
-asyncio
-google-generativeai
 python-telegram-bot
-requests
-httpx
+google-generativeai
