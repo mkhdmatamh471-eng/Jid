@@ -1,4 +1,9 @@
-pyrogram>=2.0.106
+telethon
+pyrogram
 tgcrypto
+flask
+asyncio
+google-generativeai
 python-telegram-bot
-pytz
+requests
+httpx
