@@ -224,29 +224,26 @@ async def notify_channel(detected_district, original_msg):
 
     try:
         customer = original_msg.from_user
-        customer_id = customer.id if customer else 0
-        
-        # --- الإعدادات ---
-        bot_username = "Mishweribot" 
+        if not customer: return
 
-        # ✅ توحيد الرابط ليستخدم "chat_" ليتوافق مع معالج start_command
-        gate_contact = f"https://t.me/{bot_username}?start=chat_{customer_id}"
+        # ✅ إنشاء رابط المراسلة المباشر مع الراكب (بدور وسيط)
+        # سيفتح حساب الراكب فوراً عند ضغط السائق
+        direct_url = f"tg://user?id={customer.id}"
 
         buttons = [
-            # هذا الزر الآن يوجه لنفس المعالج الذي يفحص الاشتراك
-            [InlineKeyboardButton("💬 مراسلة العميل (للمشتركين)", url=gate_contact)],
+            [InlineKeyboardButton("💬 مراسلة العميل مباشرة", url=direct_url)],
             [InlineKeyboardButton("💳 للاشتراك وتفعيل الحساب", url="https://t.me/Servecestu")]
         ]
 
         keyboard = InlineKeyboardMarkup(buttons)
 
+        # ✅ نص الرسالة بدون وقت ومع إزاحة مضبوطة
         alert_text = (
             f"🎯 <b>طلب جديد تم التقاطه!</b>\n\n"
             f"📍 <b>المنطقة:</b> {detected_district}\n"
-            f"👤 <b>اسم العميل:</b> {customer.first_name if customer else 'مخفي'}\n"
+            f"👤 <b>اسم العميل:</b> {customer.first_name}\n"
             f"📝 <b>نص الطلب:</b>\n<i>{content}</i>"
         )
-
 
         await bot_sender.send_message(
             chat_id=CHANNEL_ID,
@@ -254,7 +251,7 @@ async def notify_channel(detected_district, original_msg):
             reply_markup=keyboard,
             parse_mode=ParseMode.HTML
         )
-        print(f"✅ تم الإرسال للقناة برابط موحد (chat_): {detected_district}")
+        print(f"✅ تم الإرسال للقناة برابط مباشر: {detected_district}")
 
     except Exception as e:
         print(f"❌ خطأ إرسال للقناة: {e}")
