@@ -110,7 +110,7 @@ async def notify_all(detected_district, msg):
         except: continue
 
 # --- استقبال الرسائل بنظام الأحداث (أفضل وأسرع) ---
-@user_app.on_message(filters.group | filters.supergroup)
+@user_app.on_message(filters.group)
 async def handle_new_message(client, message):
     text = message.text or message.caption
     if not text or (message.from_user and message.from_user.is_self):
@@ -138,4 +138,3 @@ if __name__ == "__main__":
     
     print("🚀 الرادار يعمل الآن بنظام الاستماع الذكي...")
     user_app.run()
-
