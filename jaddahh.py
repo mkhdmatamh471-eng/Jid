@@ -10,7 +10,7 @@ from telegram.constants import ParseMode
 
 # --- إعداد السجلات ---
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("pyrogram").setLevel(logging.ERROR) # تقليل سجلات pyrogram لمنع الزحام
+logging.getLogger("pyrogram").setLevel(logging.ERROR)
 
 # --- استيراد الإعدادات ---
 try:
@@ -32,7 +32,7 @@ TARGET_USERS = [7996171713, 7513630480, 669659550, 6813059801, 632620058, 709388
 user_app = Client("my_session", session_string=SESSION_STRING, api_id=API_ID, api_hash=API_HASH)
 bot_sender = Bot(token=BOT_TOKEN)
 
-# --- قوائم الفلترة --- (بقيت كما هي في كودك)
+# --- قوائم الفلترة (كما هي في كودك) ---
 BLOCK_KEYWORDS = [
     "متواجد", "متاح", "شغال", "جاهز", "أسعارنا", "سيارة نظيفة", "نقل عفش", 
     "دربك سمح", "توصيل مشاوير", "أوصل", "اوصل", "اتصال", "واتساب", "للتواصل",
@@ -61,6 +61,7 @@ IRRELEVANT_TOPICS = [
     # الكلمات الجديدة المضافة:
     "عذر طبي", "سكليف", "سكليفات"
 ]
+
 def analyze_message_by_districts(text):
     if not text or len(text) < 5: return None
     clean_text = normalize_text(text)
@@ -74,54 +75,52 @@ def analyze_message_by_districts(text):
                 detected_district = d
                 break
         if detected_district: break
-    
-    if not detected_district: return None
-    
-    order_indicators = ["ابي", "ابغي", "محتاج", "مطلوب", "توصيل", "مشوار", "بكم", "من", "إلى"]
-    if any(word in clean_text for word in order_indicators):
-        return detected_district
-    return None
 
-# --- وظائف الإرسال ---
+    if not detected_district: return None
+    order_indicators = ["ابي", "ابغي", "محتاج", "مطلوب", "توصيل", "مشوار", "بكم", "من", "إلى"]
+    return detected_district if any(word in clean_text for word in order_indicators) else None
+
 async def notify_all(detected_district, msg):
     content = msg.text or msg.caption
     customer = msg.from_user
     bot_username = "Mishweribot"
-    
-    # رسالة القناة
+
     gate_contact = f"https://t.me/{bot_username}?start=contact_{customer.id if customer else 0}"
     chan_buttons = [[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]
     chan_text = f"🎯 <b>طلب مشوار جديد</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n📝 <b>التفاصيل:</b>\n<i>{content}</i>"
-    
-    # رسالة المستخدمين المستهدفين
-    user_buttons = [[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]
     user_text = f"🎯 <b>طلب جديد!</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n👤 <b>العميل:</b> {customer.first_name if customer else 'مخفي'}\n📝 <b>النص:</b>\n<i>{content}</i>"
 
-    # إرسال للقناة
     try:
         await bot_sender.send_message(chat_id=CHANNEL_ID, text=chan_text, reply_markup=InlineKeyboardMarkup(chan_buttons), parse_mode=ParseMode.HTML)
     except: pass
 
-    # إرسال للمستخدمين
     for user_id in TARGET_USERS:
         try:
-            await bot_sender.send_message(chat_id=user_id, text=user_text, reply_markup=InlineKeyboardMarkup(user_buttons), parse_mode=ParseMode.HTML)
+            await bot_sender.send_message(chat_id=user_id, text=user_text, reply_markup=InlineKeyboardMarkup(chan_buttons), parse_mode=ParseMode.HTML)
             await asyncio.sleep(0.3)
         except: continue
 
-# --- استقبال الرسائل بنظام الأحداث (أفضل وأسرع) ---
 @user_app.on_message(filters.group)
 async def handle_new_message(client, message):
     text = message.text or message.caption
-    if not text or (message.from_user and message.from_user.is_self):
-        return
-
+    if not text or (message.from_user and message.from_user.is_self): return
     found_district = analyze_message_by_districts(text)
     if found_district:
-        print(f"✅ تم التقاط طلب في: {found_district}")
         await notify_all(found_district, message)
 
-# --- خادم الويب للحفاظ على التشغيل ---
+# --- إصلاح مشكلة Peer ID Invalid ---
+async def initialize_peers():
+    """هذه الدالة تجبر البوت على التعرف على القنوات والمجموعات المشكلة"""
+    bad_ids = [-1002195863993, -1002173578886, CHANNEL_ID]
+    print("⏳ جاري تهيئة المعرفات الطويلة...")
+    for p_id in bad_ids:
+        try:
+            await user_app.get_chat(p_id)
+            print(f"✅ تم تفعيل المعرف: {p_id}")
+        except Exception as e:
+            print(f"⚠️ تعذر الوصول للمعرف {p_id}: {e}")
+
+# --- خادم الويب ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
@@ -132,9 +131,24 @@ def run_health_server():
     server = HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), HealthCheckHandler)
     server.serve_forever()
 
-if __name__ == "__main__":
-    # تشغيل خادم الويب في خيط منفصل
+# --- التشغيل النهائي المصلح ---
+async def main():
+    # تشغيل خادم الويب
     threading.Thread(target=run_health_server, daemon=True).start()
     
+    # بدء تشغيل يوزر بوت
+    await user_app.start()
+    
+    # حل مشكلة الـ Peer IDs
+    await initialize_peers()
+    
     print("🚀 الرادار يعمل الآن بنظام الاستماع الذكي...")
-    user_app.run()
+    # إبقاء البوت يعمل مستمعاً للتحديثات
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
