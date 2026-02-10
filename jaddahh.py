@@ -64,11 +64,20 @@ IRRELEVANT_TOPICS = [
 ]
 
 def analyze_message_by_districts(text):
-    if not text or len(text) < 5: return None
+    if not text: return None
+    
+    # --- شرط طول الرسالة ---
+    # إذا كانت الرسالة أطول من 200 حرف، غالباً ما تكون إعلان أو قوانين مجموعة
+    if len(text) > 200 or len(text) < 5: 
+        return None
+
     clean_text = normalize_text(text)
+    
+    # فحص الكلمات المحظورة (موجودة مسبقاً في كودك)
     if any(k in clean_text for k in BLOCK_KEYWORDS): return None
     if any(k in clean_text for k in IRRELEVANT_TOPICS): return None
 
+    # البحث عن المنطقة (الحي)
     detected_district = None
     for city, districts in CITIES_DISTRICTS.items():
         for d in districts:
@@ -78,8 +87,24 @@ def analyze_message_by_districts(text):
         if detected_district: break
 
     if not detected_district: return None
-    order_indicators = ["ابي", "ابغي", "محتاج", "مطلوب", "توصيل", "مشوار", "بكم", "من", "إلى"]
-    return detected_district if any(word in clean_text for word in order_indicators) else None
+
+    # --- الكلمات المفتاحية الجديدة المطلوبة ---
+    order_indicators = [
+    # كلماتك الأصلية
+    "ابي", "ابغي", "مين", "مشوار", "من", "سائق", 
+    "توصيل", "شهري", "ابغى", "دوام", "يوديني",
+    
+    # كلمات إضافية مقترحة
+    "سواق", "توصيلة", "يوصل", "مشاوير", "جامعه", 
+    "مدرسه", "موعد", "مستشفى", "يومي", "عقد", "يعرف", "أحد", "وديني", "تروح"
+]
+
+    
+    # التحقق من وجود أحد الكلمات المطلوبة في النص
+    if any(word in clean_text for word in order_indicators):
+        return detected_district
+        
+    return None
 
 async def notify_all(detected_district, msg):
     content = msg.text or msg.caption
@@ -164,18 +189,28 @@ async def handle_new_message(client, message):
 
 # --- إصلاح مشكلة Peer ID Invalid ---
 async def initialize_peers():
-    """إجبار المكتبة على التعرف على القنوات والمجموعات وحفظ الـ Access Hash"""
-    # أضف هنا كل المعرفات التي تظهر في الخطأ
-    target_chats = [-1002195863993, -1002173578886, CHANNEL_ID]
-    
-    print("⏳ جاري تهيئة قنوات الرادار وتحديث قاعدة بيانات الجلسة...")
-    for chat_id in target_chats:
-        try:
-            # استخدام get_chat يجبر المكتبة على حفظ بيانات القناة في ملف الـ session
-            chat = await user_app.get_chat(chat_id)
-            print(f"✅ تم التعرف على: {chat.title} ({chat_id})")
-        except Exception as e:
-            print(f"⚠️ تعذر الوصول للمعرف {chat_id}: {e}")
+    """التعرف التلقائي على جميع القنوات والمجموعات المشترك بها الحساب"""
+    print("⏳ جاري فحص وتهيئة جميع المحادثات في الحساب...")
+    count = 0
+    try:
+        # المزامنة مع كافة الحوارات (القنوات، المجموعات، الخاص)
+        async for dialog in user_app.get_dialogs():
+            # نحن نهتم فقط بالمجموعات والقنوات لعمل الرادار
+            if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
+                try:
+                    # مجرد الوصول لخصائص الشات يجعل Pyrogram يحفظ المعرف
+                    chat_id = dialog.chat.id
+                    chat_title = dialog.chat.title
+                    count += 1
+                    # طباعة دورية كل 5 قنوات لعدم ملء السجلات
+                    if count % 5 == 0:
+                        print(f"🔄 تمت تهيئة {count} محادثات حتى الآن...")
+                except Exception:
+                    continue
+        
+        print(f"✅ تم بنجاح تهيئة {count} قناة ومجموعة. الرادار جاهز الآن!")
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء محاولة جلب الحوارات: {e}")
 
 # --- خادم الويب ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
