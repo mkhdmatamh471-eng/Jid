@@ -103,15 +103,36 @@ IRRELEVANT_TOPICS = [
 async def analyze_message_hybrid(text):
     if not text or len(text) < 5 or len(text) > 400: return False
 
+    # 1. تنظيف النص من الزخارف والمسافات (لصيد الكلمات المقطعة)
     clean_text = normalize_text(text)
-    # تحديث نمط المسارات ليشمل معالم جدة الشهيرة (المطار، الكورنيش، الميناء)
-    route_pattern = r"(^|\s)من\s+.*?\s+(إلى|الى|لـ|للمطار|للكورنيش|للواجهة|للميناء)(\s|$)"
+    
+    # 2. [هام جداً] الفحص الصارم للكلمات المحظورة (القتل الفوري)
+    # إذا وجدت أي كلمة من "سكليف" أو "طبي" أو "إعلان"، نرفض الرسالة فوراً ولن نرسلها للـ AI
+    if any(k in clean_text for k in BLOCK_KEYWORDS): 
+        print(f"🚫 تم حظر الرسالة فوراً (كلمة محظورة من BLOCK_KEYWORDS)")
+        return False
+        
+    if any(k in clean_text for k in IRRELEVANT_TOPICS): 
+        print(f"🚫 تم حظر الرسالة فوراً (موضوع طبي/غير صلة)")
+        return False
+
+    # 3. فحص الأنماط السريعة (مثل: من.. إلى..)
+    route_pattern = r"(^|\s)من\s+.*?\s+(إلى|الى|لـ|للحرم|للمطار)(\s|$)"
     if re.search(route_pattern, clean_text):
         return True 
 
-    if any(k in clean_text for k in BLOCK_KEYWORDS): return False
-    if any(k in clean_text for k in IRRELEVANT_TOPICS): return False
-
+    # 4. إذا تجاوزت الفلاتر أعلاه، نرسلها للذكاء الاصطناعي كخيار أخير
+    prompt = f"""
+    Analyze if this is a CUSTOMER looking for a taxi/ride in Madinah.
+    Reply ONLY with 'YES' or 'NO'.
+    Text: "{text}"
+    """
+    try:
+        response = await asyncio.to_thread(ai_model.generate_content, prompt)
+        result = response.text.strip().upper().replace(".", "")
+        return "YES" in result
+    except Exception as e:
+        return manual_fallback_check(clean_text)
     # البرومبت الشامل المحدث لمدينة جدة
     prompt = f"""
     Role: You are an elite AI Traffic Controller for a 'Jeddah Taxi & Delivery' Telegram group.
@@ -175,13 +196,13 @@ async def notify_users(detected_district, original_msg):
 
         keyboard = InlineKeyboardMarkup(buttons_list)
 
-        alert_text = (
+            alert_text = (
             f"🎯 <b>طلب جديد تم التقاطه!</b>\n\n"
             f"📍 <b>المنطقة:</b> {detected_district}\n"
             f"👤 <b>اسم العميل:</b> {customer.first_name if customer else 'مخفي'}\n"
-            f"📝 <b>نص الطلب:</b>\n<i>{content}</i>\n\n"
-            f"⏰ <b>الوقت:</b> {datetime.now().strftime('%H:%M:%S')}"
+            f"📝 <b>نص الطلب:</b>\n<i>{content}</i>"
         )
+
 
         for user_id in TARGET_USERS:
             try:
