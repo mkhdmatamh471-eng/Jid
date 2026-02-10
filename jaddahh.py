@@ -240,13 +240,13 @@ async def notify_channel(detected_district, original_msg):
 
         keyboard = InlineKeyboardMarkup(buttons)
 
-        alert_text = (
-            f"🎯 <b>طلب مشوار جديد</b>\n\n"
+            alert_text = (
+            f"🎯 <b>طلب جديد تم التقاطه!</b>\n\n"
             f"📍 <b>المنطقة:</b> {detected_district}\n"
-            f"📝 <b>التفاصيل:</b>\n<i>{content}</i>\n\n"
-            f"⏰ <b>الوقت:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-            f"⚠️ <i>الزر أعلاه يفتح للمشتركين فقط.</i>"
+            f"👤 <b>اسم العميل:</b> {customer.first_name if customer else 'مخفي'}\n"
+            f"📝 <b>نص الطلب:</b>\n<i>{content}</i>"
         )
+
 
         await bot_sender.send_message(
             chat_id=CHANNEL_ID,
