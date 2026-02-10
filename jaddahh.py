@@ -3,16 +3,19 @@ import threading
 import sys
 import os
 import logging
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pyrogram import Client
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-import pytz
+import google.generativeai as genai
 from datetime import datetime
-from pyrogram import Client, filters, enums
 
 # --- إعداد السجلات ---
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("pyrogram").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- استيراد الإعدادات ---
 try:
@@ -26,15 +29,44 @@ except Exception as e:
 API_ID = os.environ.get("API_ID", "33888256")
 API_HASH = os.environ.get("API_HASH", "bb1902689a7e203a7aedadb806c08854")
 SESSION_STRING = os.environ.get("SESSION_STRING", "BAIFGAAAWH0qADVIqGjuDmtifoW-SQxSznz5ZhQjTbbPT2_wrX7IXCv95zqwku9kG4rpIf_xv3IDkt7CFUETnMEtUIff39Po9PwGgsiivLE1Mrbs6Ymw-h7qQap0oxSpSuIVRzWQT8_DWRJ8NGcTtp8VOJrZ7tjvjDMuVouYYd5ZmGNKry7QCQSRZuNCxc29IUC_eirR4KJKwC5IV1Ve5_Jq3PYYr8nsmiEvYauzrwftmivipkmg9CDyQfVxBfJmKi9WJuWQVvTqJWeIYYkBFLJmkcjOAKsej9fqzD4laRJIsKXaVxgfwmX5STeBpjBI7EPlMn9v0UvKQT49rYNQer0UyRSUWAAAAAH9nH9OAA")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDtF2lEZuEvI1hTFFrPRbGwwvj7ZocdPjs")
 
+# ---------------------------------------------------------
+# 🛠️ [تعديل 1] قائمة المستخدمين الذين سيستلمون الطلبات
+# ضع الـ IDs الخاصة بهم هنا (أرقام فقط)
+# ---------------------------------------------------------
+# 🛠️ قائمة الـ IDs المحدثة الذين سيستلمون الطلبات في الخاص (مفتوحة)
 CHANNEL_ID = -1003843717541 
-TARGET_USERS = [7996171713, 7513630480, 669659550, 6813059801, 632620058, 7093887960]
+ # <--- ضع الآيديات الحقيقية هنا
+
+TARGET_USERS = [
+    7996171713, 7513630480, 669659550, 6813059801, 632620058, 7093887960
+]
+
+
+
+
+# --- إعداد Gemini 1.5 Flash ---
+genai.configure(api_key=GEMINI_API_KEY)
+generation_config = {
+  "temperature": 0.1,
+  "top_p": 0.95,
+  "top_k": 40,
+  "max_output_tokens": 5,
+}
+ai_model = genai.GenerativeModel(
+  model_name="gemini-1.5-flash",
+  generation_config=generation_config,
+)
 
 # --- عملاء تليجرام ---
 user_app = Client("my_session", session_string=SESSION_STRING, api_id=API_ID, api_hash=API_HASH)
 bot_sender = Bot(token=BOT_TOKEN)
 
-# --- قوائم الفلترة (كما هي في كودك) ---
+# ---------------------------------------------------------
+# قوائم الفلترة (كما هي في كودك الأصلي)
+# ---------------------------------------------------------
+# قائمة 1: كلمات تدل أن المرسل سائق أو إعلان أو مواضيع محظورة (حظر فوري)
 BLOCK_KEYWORDS = [
     "متواجد", "متاح", "شغال", "جاهز", "أسعارنا", "سيارة نظيفة", "نقل عفش", 
     "دربك سمح", "توصيل مشاوير", "أوصل", "اوصل", "اتصال", "واتساب", "للتواصل",
@@ -64,184 +96,256 @@ IRRELEVANT_TOPICS = [
     "عذر طبي", "سكليف", "سكليفات"
 ]
 
-def analyze_message_by_districts(text):
-    if not text: return None
-    
-    # --- شرط طول الرسالة ---
-    # إذا كانت الرسالة أطول من 200 حرف، غالباً ما تكون إعلان أو قوانين مجموعة
-    if len(text) > 200 or len(text) < 5: 
-        return None
+
+# ---------------------------------------------------------
+# 2. المحرك الهجين (Hybrid Engine)
+# ---------------------------------------------------------
+async def analyze_message_hybrid(text):
+    if not text or len(text) < 5 or len(text) > 400: return False
 
     clean_text = normalize_text(text)
+    # تحديث نمط المسارات ليشمل معالم جدة الشهيرة (المطار، الكورنيش، الميناء)
+    route_pattern = r"(^|\s)من\s+.*?\s+(إلى|الى|لـ|للمطار|للكورنيش|للواجهة|للميناء)(\s|$)"
+    if re.search(route_pattern, clean_text):
+        return True 
+
+    if any(k in clean_text for k in BLOCK_KEYWORDS): return False
+    if any(k in clean_text for k in IRRELEVANT_TOPICS): return False
+
+    # البرومبت الشامل المحدث لمدينة جدة
+    prompt = f"""
+    Role: You are an elite AI Traffic Controller for a 'Jeddah Taxi & Delivery' Telegram group.
+    Objective: Filter messages to identify REAL CUSTOMERS seeking services in Jeddah.
     
-    # فحص الكلمات المحظورة (موجودة مسبقاً في كودك)
-    if any(k in clean_text for k in BLOCK_KEYWORDS): return None
-    if any(k in clean_text for k in IRRELEVANT_TOPICS): return None
+    [STRICT ANALYSIS RULES]
+    Identify if the SENDER is a CUSTOMER needing a ride or delivery in Jeddah.
 
-    # البحث عن المنطقة (الحي)
-    detected_district = None
-    for city, districts in CITIES_DISTRICTS.items():
-        for d in districts:
-            if normalize_text(d) in clean_text:
-                detected_district = d
-                break
-        if detected_district: break
+    [✅ CLASSIFY AS 'YES' (JEDDAH CUSTOMER REQUESTS)]
+    1. Explicit Ride Requests: (e.g., "أبغى سواق بجدة", "مطلوب كابتن", "سيارة للمطار", "مين يوديني الكورنيش؟").
+    2. Route Descriptions: Mentioning Jeddah areas (e.g., "من السامر للتحلية", "مشوار من أبحر للبلد", "إلى رد سي مول").
+    3. Location Pings: (e.g., "أحد حول حي المنار؟", "في كباتن في الحمدانية؟", "حي السلامة؟").
+    4. Delivery: (e.g., "توصيل غرض من المطار", "مندوب لحي الصفا").
 
-    if not detected_district: return None
+    [❌ CLASSIFY AS 'NO']
+    Ignore Driver offers ("شغال الآن", "سيارة نظيفة") or Spams.
 
-    # --- الكلمات المفتاحية الجديدة المطلوبة ---
-    order_indicators = [
-    # كلماتك الأصلية
-    "ابي", "ابغي", "مين", "مشوار", "من", "سائق", 
-    "توصيل", "شهري", "ابغى", "دوام", "يوديني",
-    
-    # كلمات إضافية مقترحة
-    "سواق", "توصيلة", "يوصل", "مشاوير", "جامعه", 
-    "مدرسه", "موعد", "مستشفى", "يومي", "عقد", "يعرف", "أحد", "وديني", "تروح"
-]
+    [📍 JEDDAH CONTEXT KNOWLEDGE]
+    Valid Jeddah locations: 
+    (Al-Safa, Al-Samer, Al-Hamdania, Obhur, Al-Rawdah, Al-Salama, Al-Zahra, Al-Balad, Al-Baghdadia, Al-Rehab, Al-Marwah, Red Sea Mall, Jeddah Park, Airport T1).
 
-    
-    # التحقق من وجود أحد الكلمات المطلوبة في النص
-    if any(word in clean_text for word in order_indicators):
-        return detected_district
-        
-    return None
+    Input Text: "{text}"
 
-async def notify_all(detected_district, msg):
-    content = msg.text or msg.caption
-    customer = msg.from_user
-    bot_username = "Mishweribot"
+    FINAL ANSWER (Reply ONLY with 'YES' or 'NO'):
+    """
 
-    # رابط المراسلة
-    gate_contact = f"https://t.me/{bot_username}?start=contact_{customer.id if customer else 0}"
-    
-    # 1. إرسال للقناة (عام)
-    chan_text = f"🎯 <b>طلب مشوار جديد</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n📝 <b>التفاصيل:</b>\n<i>{content}</i>"
     try:
+        response = await asyncio.to_thread(ai_model.generate_content, prompt)
+        result = response.text.strip().upper().replace(".", "")
+        return "YES" in result
+    except Exception as e:
+        print(f"⚠️ تجاوز AI: {e}")
+        return manual_fallback_check(clean_text)
+
+
+def manual_fallback_check(clean_text):
+    order_words = ["ابي", "ابغي", "محتاج", "نبي", "مطلوب", "بكم"]
+    service_words = ["سواق", "توصيل", "مشوار", "يوديني", "يوصلني"]
+    has_order = any(w in clean_text for w in order_words)
+    has_service = any(w in clean_text for w in service_words)
+    has_route = "من " in clean_text and ("الى" in clean_text or "لي" in clean_text)
+    return (has_order and has_service) or has_route
+
+# ---------------------------------------------------------
+# 3. [تعديل 2] دالة الإرسال للمستخدمين المحددين
+# ---------------------------------------------------------
+async def notify_users(detected_district, original_msg):
+    content = original_msg.text or original_msg.caption
+    if not content: return
+
+    try:
+        customer = original_msg.from_user
+
+        # 1. رابط حساب العميل المباشر
+        # إذا كان لدى العميل "username" نستخدمه، وإلا نستخدم "id" (رابط دائم)
+        if customer and customer.username:
+            direct_contact_url = f"https://t.me/{customer.username}"
+        elif customer:
+            direct_contact_url = f"tg://user?id={customer.id}"
+        else:
+            direct_contact_url = None # لا يمكن المراسلة إذا كان مخفياً
+
+        # 2. رابط مصدر الرسالة في الجروب
+        # ملاحظة: الروابط المباشرة للجروبات الخاصة تتطلب أن يكون المستخدم منضماً للجروب
+        
+        # 3. تجهيز الأزرار
+                # اسم يوزر البوت الخاص بك (بدون @)
+        bot_username = "Mishweribot" 
+        
+        # إنشاء رابط وسيط يحتوي على آيدي العميل
+        gateway_url = f"https://t.me/{bot_username}?start=chat_{customer.id}"
+
+        buttons_list = [
+            [InlineKeyboardButton("💬 مراسلة العميل (عبر البوت)", url=gateway_url)],
+        ]
+
+        # زر المصدر
+       
+
+        keyboard = InlineKeyboardMarkup(buttons_list)
+
+        alert_text = (
+            f"🎯 <b>طلب جديد تم التقاطه!</b>\n\n"
+            f"📍 <b>المنطقة:</b> {detected_district}\n"
+            f"👤 <b>اسم العميل:</b> {customer.first_name if customer else 'مخفي'}\n"
+            f"📝 <b>نص الطلب:</b>\n<i>{content}</i>\n\n"
+            f"⏰ <b>الوقت:</b> {datetime.now().strftime('%H:%M:%S')}"
+        )
+
+        # 4. التكرار لإرسال الرسالة لكل شخص في القائمة TARGET_USERS
+        for user_id in TARGET_USERS:
+            try:
+                await bot_sender.send_message(
+                    chat_id=user_id,
+                    text=alert_text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e_user:
+                print(f"⚠️ فشل الإرسال للمستخدم {user_id}: {e_user}")
+
+        print(f"✅ تم توزيع الطلب ({detected_district}) للمشتركين.")
+
+    except Exception as e:
+        print(f"❌ خطأ عام في دالة الإرسال: {e}")
+
+async def notify_channel(detected_district, original_msg):
+    content = original_msg.text or original_msg.caption
+    if not content: return
+
+    try:
+        customer = original_msg.from_user
+        # استخراج المعرفات اللازمة
+        customer_id = customer.id if customer else 0
+        msg_id = getattr(original_msg, "id", getattr(original_msg, "message_id", 0))
+        chat_id_str = str(original_msg.chat.id).replace("-100", "")
+
+        # --- الإعدادات (تأكد من مطابقة يوزر البوت) ---
+        # استبدل 'YourBotUsername' بيوزر بوتك بدون علامة @
+        bot_username = "Mishweribot" 
+
+        # تجهيز الروابط العميقة (Deep Links)
+        # الرابط الأول لمراسلة العميل
+        gate_contact = f"https://t.me/{bot_username}?start=contact_{customer_id}"
+        # الرابط الثاني لمصدر الطلب في الجروب
+        gate_source = f"https://t.me/{bot_username}?start=source_{chat_id_str}_{msg_id}"
+
+        buttons = [
+            [InlineKeyboardButton("💬 مراسلة العميل (للمشتركين)", url=gate_contact)],
+            [InlineKeyboardButton("💳 للاشتراك وتفعيل الحساب", url="https://t.me/Servecestu")]
+        ]
+
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        alert_text = (
+            f"🎯 <b>طلب مشوار جديد</b>\n\n"
+            f"📍 <b>المنطقة:</b> {detected_district}\n"
+            f"📝 <b>التفاصيل:</b>\n<i>{content}</i>\n\n"
+            f"⏰ <b>الوقت:</b> {datetime.now().strftime('%H:%M:%S')}\n"
+            f"⚠️ <i>الروابط أعلاه تفتح للمشتركين فقط.</i>"
+        )
+
         await bot_sender.send_message(
-            chat_id=CHANNEL_ID, 
-            text=chan_text, 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]), 
+            chat_id=CHANNEL_ID,
+            text=alert_text,
+            reply_markup=keyboard,
             parse_mode=ParseMode.HTML
         )
-    except: pass
+        print(f"✅ تم الإرسال للقناة بروابط مشفرة: {detected_district}")
 
-    # 2. جلب السائقين المشتركين حالياً من قاعدة البيانات
-    active_drivers = await get_active_drivers()
-    
-    user_text = f"🎯 <b>طلب جديد (للمشتركين فقط)!</b>\n\n📍 <b>المنطقة:</b> {detected_district}\n👤 <b>العميل:</b> {customer.first_name if customer else 'مخفي'}\n📝 <b>النص:</b>\n<i>{content}</i>"
+    except Exception as e:
+        print(f"❌ خطأ إرسال للقناة: {e}")
 
-    # 3. الإرسال لكل سائق اشتراكه سارٍ
-    for driver_id in active_drivers:
+
+# ---------------------------------------------------------
+# 4. الرادار الرئيسي
+# ---------------------------------------------------------
+async def start_radar():
+    await user_app.start()
+    print("🚀 الرادار يعمل ويرسل للمستخدمين المحددين...")
+
+    # [هام] قم بإرسال رسالة تجريبية لنفسك عند التشغيل للتأكد
+    # يمكنك إزالة هذا السطر لاحقاً
+    if TARGET_USERS:
         try:
-            await bot_sender.send_message(
-                chat_id=driver_id, 
-                text=user_text, 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💬 مراسلة العميل", url=gate_contact)]]), 
-                parse_mode=ParseMode.HTML
-            )
-            await asyncio.sleep(0.1) # تأخير بسيط لتجنب حظر التليجرام
-        except:
-            continue
+            await bot_sender.send_message(TARGET_USERS[0], "✅ تم تشغيل البوت بنجاح")
+        except: pass
 
+    last_processed = {}
 
-async def get_active_drivers():
-    conn = get_db_connection()
-    if not conn: return []
-    
-    active_drivers = []
-    try:
-        def query():
-            ksa_tz = pytz.timezone('Asia/Riyadh')
-            now_ksa = datetime.now(ksa_tz)
-            
-            with conn.cursor() as cur:
-                # جلب السائقين الذين لديهم تاريخ انتهاء مستقبلي
-                cur.execute("""
-                    SELECT user_id, subscription_expiry 
-                    FROM users 
-                    WHERE role = 'driver' 
-                    AND subscription_expiry IS NOT NULL
-                """)
-                rows = cur.fetchall()
-                
-                drivers = []
-                for row in rows:
-                    u_id, expiry = row
-                    # التأكد من أن الاشتراك لم ينتهِ
-                    if expiry and expiry > now_ksa:
-                        drivers.append(u_id)
-                return drivers
+    while True:
+        try:
+            await asyncio.sleep(5) 
 
-        active_drivers = await asyncio.to_thread(query)
-    except Exception as e:
-        print(f"❌ Error fetching active drivers: {e}")
-    finally:
-        release_db_connection(conn)
-    return active_drivers
-
-@user_app.on_message(filters.group)
-async def handle_new_message(client, message):
-    text = message.text or message.caption
-    if not text or (message.from_user and message.from_user.is_self): return
-    found_district = analyze_message_by_districts(text)
-    if found_district:
-        await notify_all(found_district, message)
-
-# --- إصلاح مشكلة Peer ID Invalid ---
-async def initialize_peers():
-    """التعرف التلقائي على جميع القنوات والمجموعات المشترك بها الحساب"""
-    print("⏳ جاري فحص وتهيئة جميع المحادثات في الحساب...")
-    count = 0
-    try:
-        # المزامنة مع كافة الحوارات (القنوات، المجموعات، الخاص)
-        async for dialog in user_app.get_dialogs():
-            # نحن نهتم فقط بالمجموعات والقنوات لعمل الرادار
-            if dialog.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]:
-                try:
-                    # مجرد الوصول لخصائص الشات يجعل Pyrogram يحفظ المعرف
-                    chat_id = dialog.chat.id
-                    chat_title = dialog.chat.title
-                    count += 1
-                    # طباعة دورية كل 5 قنوات لعدم ملء السجلات
-                    if count % 5 == 0:
-                        print(f"🔄 تمت تهيئة {count} محادثات حتى الآن...")
-                except Exception:
+            async for dialog in user_app.get_dialogs(limit=50):
+                # تأكد من أن الحوار هو "مجموعة" أو "سوبر جروب"
+                dialog_type = str(dialog.chat.type).upper()
+                if "GROUP" not in dialog_type and "SUPERGROUP" not in dialog_type: 
                     continue
-        
-        print(f"✅ تم بنجاح تهيئة {count} قناة ومجموعة. الرادار جاهز الآن!")
-    except Exception as e:
-        print(f"⚠️ خطأ أثناء محاولة جلب الحوارات: {e}")
 
-# --- خادم الويب ---
+                chat_id = dialog.chat.id
+
+                # جلب آخر رسالة
+                try:
+                    async for msg in user_app.get_chat_history(chat_id, limit=1):
+                        # تخطي الرسائل القديمة أو المعالجة مسبقاً
+                        if chat_id in last_processed and msg.id <= last_processed[chat_id]:
+                            continue
+
+                        last_processed[chat_id] = msg.id
+
+                        text = msg.text or msg.caption
+                        # تجاهل رسائل البوت نفسه أو الرسائل الفارغة
+                        if not text or (msg.from_user and msg.from_user.is_self): continue
+
+                        # التحليل
+                        is_valid_order = await analyze_message_hybrid(text)
+
+                        if is_valid_order:
+                            # استخراج الحي (اختياري)
+                            found_d = "عام"
+                            text_c = normalize_text(text)
+                            for city, districts in CITIES_DISTRICTS.items():
+                                for d in districts:
+                                    if normalize_text(d) in text_c:
+                                        found_d = d
+                                        break
+
+                            # [تعديل 3] استدعاء دالة الإرسال للمستخدمين
+                            
+             # ✅ [التعديل المطلوب] استدعاء الدالتين معاً
+                            await notify_users(found_d, msg)   # الإرسال للأشخاص في الخاص
+                            await notify_channel(found_d, msg) # الإرسال للقناة العامة
+                except Exception as e_chat:
+                    # أحياناً يحدث خطأ في قراءة مجموعة معينة، نتجاوزها
+                    continue
+
+        except Exception as e:
+            print(f"⚠️ خطأ في الدورة الرئيسية: {e}")
+            await asyncio.sleep(5)
+
+# --- خادم الويب (Health Check) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers()
-        self.wfile.write(b"Bot Active")
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Sending to Users Direct Message")
     def log_message(self, format, *args): return
 
 def run_health_server():
-    server = HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), HealthCheckHandler)
-    server.serve_forever()
-
-# --- التشغيل النهائي المصلح ---
-async def main():
-    # تشغيل خادم الويب (Render Health Check)
-    threading.Thread(target=run_health_server, daemon=True).start()
-    
-    # بدء تشغيل اليوزر بوت
-    await user_app.start()
-    
-    # خطوة الإصلاح: تهيئة المعرفات قبل بدء استقبال الرسائل
-    await initialize_peers()
-    
-    print("🚀 الرادار يعمل الآن... سيتم تجاهل أخطاء المعرفات القديمة.")
-    
-    # إبقاء التطبيق يعمل
-    await asyncio.Event().wait()
+    port = int(os.environ.get("PORT", 10000))
+    httpd = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    httpd.serve_forever()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    threading.Thread(target=run_health_server, daemon=True).start()
+    asyncio.run(start_radar())
