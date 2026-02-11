@@ -200,7 +200,7 @@ async def notify_users(detected_district, original_msg):
             return
 
         # ✅ تأكد من اليوزر الصحيح (Mishweriibot أم Mishwariibot)
-        bot_username = "Mishweriibot" 
+        bot_username = "Mishweribot" 
         
         # ✅ استخدام متغير محمي للآيدي
         customer_id = customer.id
