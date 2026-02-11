@@ -102,72 +102,80 @@ IRRELEVANT_TOPICS = [
 # 2. المحرك الهجين (Hybrid Engine)
 # ---------------------------------------------------------
 async def analyze_message_hybrid(text):
-    if not text or len(text) < 5 or len(text) > 400: return False
+    if not text or len(text) < 5 or len(text) > 400: 
+        return False
 
-    # 1. تنظيف النص من الزخارف والمسافات (لصيد الكلمات المقطعة)
     clean_text = normalize_text(text)
     
-    # 2. [هام جداً] الفحص الصارم للكلمات المحظورة (القتل الفوري)
-    # إذا وجدت أي كلمة من "سكليف" أو "طبي" أو "إعلان"، نرفض الرسالة فوراً ولن نرسلها للـ AI
-    if any(k in clean_text for k in BLOCK_KEYWORDS): 
-        print(f"🚫 تم حظر الرسالة فوراً (كلمة محظورة من BLOCK_KEYWORDS)")
-        return False
-        
-    if any(k in clean_text for k in IRRELEVANT_TOPICS): 
-        print(f"🚫 تم حظر الرسالة فوراً (موضوع طبي/غير صلة)")
+    # 1. القتل الفوري للكلمات المحظورة (لتوفير استهلاك الـ API)
+    if any(k in clean_text for k in BLOCK_KEYWORDS + IRRELEVANT_TOPICS): 
+        print(f"🚫 تم حظر الرسالة فوراً (كلمات محظورة)")
         return False
 
-    # 3. فحص الأنماط السريعة (مثل: من.. إلى..)
-    route_pattern = r"(^|\s)من\s+.*?\s+(إلى|الى|لـ|للحرم|للمطار)(\s|$)"
-    if re.search(route_pattern, clean_text):
-        return True 
-
-    # 4. إذا تجاوزت الفلاتر أعلاه، نرسلها للذكاء الاصطناعي كخيار أخير
+    # 2. البرومبت الاحترافي المخصص لجدة
+    # تم تحديث اسم النموذج ليتوافق مع الإصدارات المستقرة
+        # البرومبت الاحترافي المطور لجدة (الإصدار الشامل لجميع الأحياء)
     prompt = f"""
-    Analyze if this is a CUSTOMER looking for a taxi/ride in Madinah.
-    Reply ONLY with 'YES' or 'NO'.
-    Text: "{text}"
-    """
-    try:
-        response = await asyncio.to_thread(ai_model.generate_content, prompt)
-        result = response.text.strip().upper().replace(".", "")
-        return "YES" in result
-    except Exception as e:
-        return manual_fallback_check(clean_text)
-    # البرومبت الشامل المحدث لمدينة جدة
-    prompt = f"""
-    Role: You are an elite AI Traffic Controller for a 'Jeddah Taxi & Delivery' Telegram group.
-    Objective: Filter messages to identify REAL CUSTOMERS seeking services in Jeddah.
-    
-    [STRICT ANALYSIS RULES]
-    Identify if the SENDER is a CUSTOMER needing a ride or delivery in Jeddah.
+    Role: You are an elite AI Traffic Controller for the 'Jeddah Live Dispatch' system. 
+    Objective: Identify REAL CUSTOMERS in Jeddah while ignoring drivers, ads, and spam.
 
-    [✅ CLASSIFY AS 'YES' (JEDDAH CUSTOMER REQUESTS)]
-    1. Explicit Ride Requests: (e.g., "أبغى سواق بجدة", "مطلوب كابتن", "سيارة للمطار", "مين يوديني الكورنيش؟").
-    2. Route Descriptions: Mentioning Jeddah areas (e.g., "من السامر للتحلية", "مشوار من أبحر للبلد", "إلى رد سي مول").
-    3. Location Pings: (e.g., "أحد حول حي المنار؟", "في كباتن في الحمدانية؟", "حي السلامة؟").
-    4. Delivery: (e.g., "توصيل غرض من المطار", "مندوب لحي الصفا").
+    [CORE LOGIC]
+    Return 'YES' ONLY if the sender is a HUMAN CUSTOMER seeking a ride or delivery.
+    Return 'NO' if it's a driver offering service, an ad, or irrelevant talk.
 
-    [❌ CLASSIFY AS 'NO']
-    Ignore Driver offers ("شغال الآن", "سيارة نظيفة") or Spams.
+    [📍 COMPREHENSIVE JEDDAH GEOGRAPHY]
+    Recognize any mention of these areas as a potential Jeddah request:
+    - North: (Obhur Al-Shamaliyah/Janubiyah, Al-Abruq, Al-Basateen, Al-Mohammadiyah, Al-Shati, Al-Naeem, Al-Zahra, Al-Salama, Al-Bawadi, Al-Rawdah, Al-Faisaliah, Al-Reheli, Al-Hamdania, Al-Salhiya, Al-Falah).
+    - Central: (Al-Safa, Al-Marwah, Al-Rehab, Al-Kandarah, Al-Aziziyah, Al-Mushrifah, Al-Rehab, Al-Baghdadia, Al-Ruwaiss, Al-Sharafiyah, Al-Wurud).
+    - South & East: (Al-Balad, Al-Hindawiya, Al-Thualba, Al-Waziriyah, Al-Amir Fawaz, Al-Iskan, Al-Khumra, Al-Sanaiya, Al-Ajawid, Al-Samer, Al-Manar, Al-Adl, Al-Abaid, Al-Harazat).
+    - Landmarks: (King Abdulaziz Airport KAIA, T1, North Terminal, Jeddah Islamic Port, Haramain Train Station Sulaymaniyah, Jeddah Corniche, Waterfront, KAU, Jeddah Park, Red Sea Mall, Mall of Arabia, Al-Andalus Mall, Al-Salam Mall).
 
-    [📍 JEDDAH CONTEXT KNOWLEDGE]
-    Valid Jeddah locations: 
-    (Al-Safa, Al-Samer, Al-Hamdania, Obhur, Al-Rawdah, Al-Salama, Al-Zahra, Al-Balad, Al-Baghdadia, Al-Rehab, Al-Marwah, Red Sea Mall, Jeddah Park, Airport T1).
+    [✅ CLASSIFY AS 'YES' (CUSTOMER INTENT)]
+    - Direct: "أبغا سواق"، "مطلوب كابتن"، "مين فاضي يوصلني"، "في أحد حول حي..."
+    - Routes: "مشوار من الصفا للتحلية"، "من المطار لأبحر"، "بكم توديني الرد سي؟"
+    - Slang/Hijazi: (أبغى، أبغا، فينك، كباتن، يوديني، يوصلني، دحين، حق مشوار، توصيلة).
+    - Delivery: "أحتاج مندوب"، "توصيل غرض"، "أبغا أحد يجيب لي طلب من..."
+
+    [❌ CLASSIFY AS 'NO' (DRIVER/SPAM/ADS)]
+    - Driver offers: "شغال الآن"، "موجود بجدة"، "سيارة نظيفة"، "توصيل مطار بأرخص الأسعار".
+    - Keywords: (متواجد، متاح، أسعارنا، استقدام، عقار، سكليف، عذر طبي، قرض، باقات).
 
     Input Text: "{text}"
 
     FINAL ANSWER (Reply ONLY with 'YES' or 'NO'):
     """
 
+
     try:
+        # تأكد من تعريف ai_model باستخدام "gemini-1.5-flash-latest" في بداية الملف
         response = await asyncio.to_thread(ai_model.generate_content, prompt)
-        result = response.text.strip().upper().replace(".", "")
-        return "YES" in result
+        
+        # تنظيف النتيجة من أي زيادات
+        result = response.text.strip().upper().replace(".", "").replace("'", "")
+        
+        if "YES" in result:
+            print(f"✅ ذكاء اصطناعي: قبول طلب لجدة")
+            return True
+        else:
+            return False
+
     except Exception as e:
-        print(f"⚠️ تجاوز AI: {e}")
+        # في حال فشل الـ AI (مثل خطأ 404 أو ضغط الشبكة)، نعتمد الفحص اليدوي كخطة بديلة
+        print(f"⚠️ تجاوز AI (فشل الاتصال): {e}")
         return manual_fallback_check(clean_text)
 
+def manual_fallback_check(clean_text):
+    # كلمات تدل على الطلب في جدة
+    order_triggers = ["ابي", "ابغي", "أبغا", "محتاج", "مطلوب", "نبي", "مين يوديني"]
+    jeddah_keywords = ["سواق", "كابتن", "مشوار", "توصيل", "جدة", "جده"]
+    
+    has_order = any(w in clean_text for w in order_triggers)
+    has_keyword = any(w in clean_text for w in jeddah_keywords)
+    
+    # فحص نمط "من ... إلى" الشهير
+    has_route = "من" in clean_text and ("الى" in clean_text or "إلى" in clean_text or "لـ" in clean_text)
+    
+    return (has_order and has_keyword) or has_route
 
 def manual_fallback_check(clean_text):
     order_words = ["ابي", "ابغي", "محتاج", "نبي", "مطلوب", "بكم"]
