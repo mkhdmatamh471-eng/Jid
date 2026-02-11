@@ -400,29 +400,38 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         return
 
 def run_health_server():
-    # نستخدم البورت الذي يحدده Render أو 10000 كاحتياطي
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🌍 تشغيل خادم الصحة على المنفذ: {port}")
-    httpd = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    httpd.serve_forever()
-
-# --- التشغيل الرئيسي ---
-if __name__ == "__main__":
-    # 1. تشغيل خادم الويب في خيط منفصل (Thread)
-    # الآن الدالة run_health_server موجودة ولن يظهر خطأ
-    threading.Thread(target=run_health_server, daemon=True).start()
+    from http.server import BaseHTTPRequestHandler, HTTPServer
     
-    # 2. إعداد حلقة الأحداث (Loop) للرادار
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"ALIVE") # يخبر Render أن الخدمة تعمل
+        
+        # لمنع ظهور سجلات الطلبات الكثيرة في الـ Logs
+        def log_message(self, format, *args):
+            return
 
-    # 3. تشغيل الرادار
     try:
-        loop.run_until_complete(start_radar())
-    except (KeyboardInterrupt, SystemExit):
-        print("👋 تم إيقاف الرادار يدوياً")
+        server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
+        print("✅ Health Check Server started on port 10000")
+        server.serve_forever()
     except Exception as e:
-        print(f"⚠️ خطأ غير متوقع في التشغيل: {e}")
+        print(f"❌ Health Server Error: {e}")
+
+if __name__ == "__main__":
+    # 1. تشغيل خادم الصحة في Thread منفصل لضمان استجابة Render فوراً
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    
+    # 2. إعداد تشغيل الرادار
+    try:
+        # استخدام asyncio.run لإدارة دورة حياة الـ Loop بشكل كامل
+        asyncio.run(start_radar())
+    except (KeyboardInterrupt, SystemExit):
+        print("\n👋 تم الإيقاف يدوياً.")
+    except Exception as e:
+        print(f"⚠️ خطأ فادح: {e}")
+        # هام جداً لـ Render: الخروج برمز 1 يجعل السيرفر يعيد تشغيل البوت تلقائياً
+        sys.exit(1)
