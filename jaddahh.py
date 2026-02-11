@@ -186,10 +186,17 @@ async def notify_users(detected_district, original_msg):
 
     try:
         customer = original_msg.from_user
+        # ✅ التحقق من وجود العميل لتجنب انهيار الكود
+        if not customer or not customer.id:
+            print("⚠️ تعذر جلب ID العميل، سيتم تخطي الإرسال.")
+            return
+
+        # ✅ تأكد من اليوزر الصحيح (Mishweriibot أم Mishwariibot)
         bot_username = "Mishweriibot" 
         
-        # ✅ استخدام "direct_" للسائقين المختارين لتجاوز فحص الاشتراك لاحقاً
-        gateway_url = f"https://t.me/{bot_username}?start=direct_{customer.id}"
+        # ✅ استخدام متغير محمي للآيدي
+        customer_id = customer.id
+        gateway_url = f"https://t.me/{bot_username}?start=direct_{customer_id}"
 
         buttons_list = [
             [InlineKeyboardButton("💬 مراسلة العميل الآن", url=gateway_url)],
@@ -197,14 +204,15 @@ async def notify_users(detected_district, original_msg):
 
         keyboard = InlineKeyboardMarkup(buttons_list)
 
+        # ✅ تنسيق النص
         alert_text = (
             f"🎯 <b>طلب جديد تم التقاطه!</b>\n\n"
             f"📍 <b>المنطقة:</b> {detected_district}\n"
-            f"👤 <b>اسم العميل:</b> {customer.first_name if customer else 'مخفي'}\n"
+            f"👤 <b>اسم العميل:</b> {customer.first_name}\n"
             f"📝 <b>نص الطلب:</b>\n<i>{content}</i>"
         )
 
-
+        # ✅ إرسال الرسائل للمستخدمين المحددين
         for user_id in TARGET_USERS:
             try:
                 await bot_sender.send_message(
@@ -217,7 +225,7 @@ async def notify_users(detected_district, original_msg):
                 print(f"⚠️ فشل الإرسال للمستخدم {user_id}: {e_user}")
 
     except Exception as e:
-        print(f"❌ خطأ عام في دالة الإرسال: {e}")
+        print(f"❌ خطأ عام في دالة الإرسال للمستخدمين: {e}")
 
 async def notify_channel(detected_district, original_msg):
     content = original_msg.text or original_msg.caption
