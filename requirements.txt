@@ -1,3 +1,5 @@
-telethon
+python-telegram-bot
+google-generativeai
+pypdf
 flask
-cryptg
+gunicorn
