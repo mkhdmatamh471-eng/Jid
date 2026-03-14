@@ -5,7 +5,6 @@ import json
 import logging
 import asyncio
 import random
-import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from playwright.async_api import async_playwright
@@ -36,10 +35,26 @@ app = FastAPI(title="Salla AI Integrated Bot")
 SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_session")
 
 # تكوين البيئة
-DATABASE_URL = os.getenv("DATABASE_URL") 
+
+
+# تحميل ملف .env فقط إذا كان موجوداً (للتطوير المحلي)
+# في ريندر، سيتم تجاهل هذا السطر واستخدام إعدادات البيئة المباشرة
+load_dotenv()
+
+# 1. جلب رابط قاعدة البيانات ومعالجة مشكلة "postgres://" في SQLAlchemy
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# 2. جلب بقية المفاتيح
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 WA_TOKEN = os.getenv("WA_ACCESS_TOKEN")
 WA_PHONE_ID = os.getenv("WA_PHONE_NUMBER_ID")
+
+# 3. إعدادات Salla (يفضل إضافتها أيضاً)
+SALLA_CLIENT_ID = os.getenv("SALLA_CLIENT_ID")
+SALLA_CLIENT_SECRET = os.getenv("SALLA_CLIENT_SECRET")
+SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 
 engine = create_engine(
     DATABASE_URL,
