@@ -23,7 +23,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timedelta
 import logging
-
+import psycopg2  
+from psycopg2.extras import RealDictCursor
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
 logger = logging.getLogger(__name__)
 
