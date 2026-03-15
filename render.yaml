@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: salla-ai-bot
+    env: docker # هنا نخبر ريندر باستخدام دوكر
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GROK_API_KEY
+        sync: false
