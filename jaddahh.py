@@ -636,34 +636,52 @@ async def send_whatsapp_dynamic(store_id: str, phone: str, text: str):
 
 # تحسين دالة send_via_web_bridge لتكون أكثر ذكاءً
 async def send_via_web_bridge(store_id: str, phone: str, text: str):
-    """إرسال رسالة عبر متصفح متجر محدد"""
+    """إرسال رسالة عبر متصفح متجر محدد باستخدام نظام الجلسات الموحد"""
     try:
-        page = await get_handler_for_store(store_id)
+        # 1. التأكد من جاهزية المتصفح واستعادة الجلسة لهذا المتجر تحديداً
+        # نستخدم ensure_browser_ready لضمان أن المتصفح يعمل والـ Session محملة
+        page = await ensure_browser_ready(store_id)
         
-        # فحص QR
-        qr_canvas = await page.query_selector("canvas")
-        if qr_canvas:
-            logger.error(f"المتجر {store_id} يحتاج مسح QR")
+        if not page:
+            logger.error(f"❌ تعذر تجهيز المتصفح للمتجر {store_id}")
             return False
 
-        clean_phone = phone.replace("+", "").replace(" ", "")
-        url = f"https://web.whatsapp.com/send?phone={clean_phone}"
+        # 2. فحص ما إذا كان الواتساب يطلب مسح الـ QR (جلسة منتهية)
+        qr_canvas = await page.query_selector("canvas")
+        if qr_canvas:
+            logger.error(f"⚠️ المتجر {store_id} يحتاج لإعادة مسح كود QR (الجلسة غير صالحة)")
+            return False
+
+        # 3. تنظيف رقم الهاتف وتجهيز الرابط
+        clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+        url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={text}" 
+        # ملاحظة: وضع النص في الرابط أحياناً يكون أسرع وأدق
         
-        # التنقل للمحادثة
-        await page.goto(url, wait_until="networkidle", timeout=60000)
+        # 4. الانتقال إلى المحادثة
+        logger.info(f"⏳ جاري الدخول لمحادثة {clean_phone}...")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
-        input_selector = 'div[contenteditable="true"]'
-        await page.wait_for_selector(input_selector, timeout=30000)
-        
-        # الكتابة والارسال
-        await page.keyboard.type(text, delay=random.randint(30, 70))
-        await asyncio.sleep(1)
-        await page.keyboard.press("Enter")
-        
-        logger.info(f"✅ أرسل المتجر {store_id} رسالة إلى {phone}")
-        return True
+        # 5. الانتظار حتى يظهر صندوق الكتابة (تأكيد تحميل المحادثة)
+        input_selector = 'div[contenteditable="true"][data-tab="10"]'
+        try:
+            await page.wait_for_selector(input_selector, timeout=35000)
+            
+            # 6. محاكاة الكتابة البشرية (اختياري لو أردت كتابة النص يدوياً بدل الرابط)
+            # await page.keyboard.type(text, delay=random.randint(30, 70))
+            
+            # 7. الضغط على إرسال (Enter)
+            await asyncio.sleep(random.uniform(1, 2)) # وقفة بسيطة للتمويه
+            await page.keyboard.press("Enter")
+            
+            logger.info(f"✅ تم إرسال الرسالة بنجاح للرقم {phone} عبر المتجر {store_id}")
+            return True
+            
+        except Exception as timeout_e:
+            logger.error(f"⏳ استغرق تحميل صندوق المحادثة وقتاً طويلاً للرقم {phone}")
+            return False
+
     except Exception as e:
-        logger.error(f"خطأ في إرسال المتجر {store_id}: {e}")
+        logger.error(f"❌ خطأ غير متوقع في إرسال رسالة المتجر {store_id}: {e}")
         return False
 
 async def get_merchant_stats(store_id: str):
@@ -805,16 +823,17 @@ async def cron_scheduler():
 # تحديث دالة بدء التطبيق لتشغيل المجدل
 @app.on_event("startup")
 async def startup_event():
-    # تشغيل عامل إرسال الرسائل
+    # 1. تشغيل عامل إرسال الرسائل (مهم جداً لمعالجة الطابور)
     asyncio.create_task(message_worker())
     
-    # تشغيل مجدل السلال المتروكة
+    # 2. تشغيل مجدول السلال المتروكة
     asyncio.create_task(cron_scheduler())
     
-    # تهيئة المتصفح فوراً ليكون جاهزاً لاستقبال/إرسال الرسائل
-    asyncio.create_task(ensure_browser_ready())
+    # 3. إزالة استدعاء ensure_browser_ready العام
+    # السبب: الدالة الآن تتطلب store_id لفتح الجلسة من قاعدة البيانات.
+    # المتصفح سيفتح تلقائياً "عند الحاجة" (On Demand) بمجرد وصول أول رسالة أو طلب إرسال.
     
-    logger.info("🚀 تم تشغيل جميع الخدمات الخلفية بنجاح")
+    logger.info("🚀 تم تشغيل الخدمات الخلفية. المتصفح سيعمل تلقائياً عند وصول أول طلب لمتجر.")
 
 # --- معالجة الـ Webhooks ---
 
