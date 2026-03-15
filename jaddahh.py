@@ -41,7 +41,11 @@ app = FastAPI()
 # تأكد من وجود المسارات التي يطلبها الـ JavaScript في ملفك
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jaddahh")
+def get_db_connection():
+    # تأكد أن DATABASE_URL موجود في إعدادات ريندر ويبدأ بـ postgresql://
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode='require')
+    return conn
 
 
 # قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
@@ -258,49 +262,56 @@ async def ensure_browser_ready(store_id: str):
         return None
 
 async def save_session_to_db(store_id: str):
-    """ضغط مجلد الجلسة ورفعه إلى سوبابيس"""
     try:
         path = os.path.join(SESSION_PATH, f"session_{store_id}")
         if not os.path.exists(path): return
 
-        # ضغط المجلد في الذاكرة
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
             tar.add(path, arcname=os.path.basename(path))
         
-        # تحويل لـ Base64
         b64_session = base64.b64encode(buffer.getvalue()).decode()
         
-        # حفظ في سوبابيس
-        supabase.table("store_sessions").upsert({
-            "store_id": store_id,
-            "session_data": b64_session,
-            "updated_at": datetime.now().isoformat()
-        }).execute()
-        
-        logger.info(f"✅ تم حفظ جلسة المتجر {store_id} في قاعدة البيانات.")
+        # استخدام UPSERT في PostgreSQL (ON CONFLICT)
+        query = """
+            INSERT INTO store_sessions (store_id, session_data, updated_at)
+            VALUES (:sid, :data, NOW())
+            ON CONFLICT (store_id) 
+            DO UPDATE SET session_data = EXCLUDED.session_data, updated_at = NOW()
+        """
+        execute_db_query(query, {"sid": store_id, "data": b64_session})
+        logger.info(f"✅ تم حفظ جلسة المتجر {store_id} عبر PostgreSQL.")
     except Exception as e:
         logger.error(f"❌ خطأ أثناء حفظ الجلسة: {e}")
 
 async def load_session_from_db(store_id: str):
-    """تحميل الجلسة من قاعدة البيانات وفك ضغطها"""
+    """تحميل الجلسة من PostgreSQL وفك ضغطها محلياً"""
     try:
-        res = supabase.table("store_sessions").select("session_data").eq("store_id", store_id).execute()
-        if not res.data: return False
+        # 1. استعلام SQL لجلب البيانات المشفرة (Base64)
+        query = "SELECT session_data FROM store_sessions WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
 
-        b64_data = res.data[0]["session_data"]
+        # 2. التحقق من وجود بيانات
+        if not row or not row[0]:
+            logger.warning(f"⚠️ لا توجد جلسة محفوظة في القاعدة للمتجر {store_id}")
+            return False
+
+        # 3. معالجة البيانات (Base64 -> Binary -> Extraction)
+        b64_data = row[0]
         compressed_data = base64.b64decode(b64_data)
         
-        # فك الضغط في المسار المطلوب
+        # 4. فك الضغط في المسار المخصص (SESSION_PATH)
         buffer = io.BytesIO(compressed_data)
         with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
             tar.extractall(path=SESSION_PATH)
         
-        logger.info(f"📂 تم استعادة جلسة المتجر {store_id} من قاعدة البيانات.")
+        logger.info(f"📂 تم استعادة جلسة المتجر {store_id} بنجاح من PostgreSQL.")
         return True
+
     except Exception as e:
-        logger.error(f"❌ خطأ أثناء تحميل الجلسة: {e}")
+        logger.error(f"❌ خطأ كارثي أثناء تحميل الجلسة للمتجر {store_id}: {e}")
         return False
+
 async def on_new_message_logic(payload):
     """
     دالة للبحث عن المحادثات غير المقروءة، الضغط عليها، استخراج النص، والرد.
@@ -441,73 +452,140 @@ async def block_useless_resources(route):
 
 
 async def salla_request(method: str, endpoint: str, store_id: str, payload: dict = None):
-    """دالة موحدة لطلبات سلة مع تجديد تلقائي للتوكن"""
-    res = supabase.table("store_settings").select("salla_access_token").eq("store_id", store_id).single().execute()
-    token = res.data["salla_access_token"]
-    
-    url = f"https://api.salla.dev/admin/v2/{endpoint}"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    
-    async with httpx.AsyncClient() as client:
-        if method.upper() == "GET":
-            resp = await client.get(url, headers=headers)
-        else:
-            resp = await client.post(url, headers=headers, json=payload)
-            
-        if resp.status_code == 401: # التوكن انتهى
-            new_token = await refresh_salla_token(store_id)
-            if new_token:
-                headers["Authorization"] = f"Bearer {new_token}"
-                # إعادة المحاولة بالتوكن الجديد
-                return await salla_request(method, endpoint, store_id, payload)
+    """دالة موحدة لطلبات سلة تعتمد على PostgreSQL مع تجديد تلقائي للتوكن"""
+    try:
+        # 1. جلب التوكن من قاعدة البيانات مباشرة
+        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
         
-        return resp.json() if resp.status_code == 200 else None
+        if not row:
+            logger.error(f"❌ فشل جلب التوكن للمتجر {store_id}: المتجر غير مسجل.")
+            return None
+            
+        token = row[0]
+        url = f"https://api.salla.dev/admin/v2/{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {token}", 
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            # 2. تنفيذ الطلب بناءً على الطريقة (GET, POST, etc.)
+            if method.upper() == "GET":
+                resp = await client.get(url, headers=headers)
+            else:
+                resp = await client.post(url, headers=headers, json=payload)
+                
+            # 3. معالجة انتهاء صلاحية التوكن (401)
+            if resp.status_code == 401:
+                logger.warning(f"🔄 توكن المتجر {store_id} منتهي، جاري التجديد...")
+                new_token = await refresh_salla_token(store_id)
+                
+                if new_token:
+                    # إعادة المحاولة مرة واحدة فقط بالتوكن الجديد
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    if method.upper() == "GET":
+                        resp = await client.get(url, headers=headers)
+                    else:
+                        resp = await client.post(url, headers=headers, json=payload)
+                else:
+                    logger.error(f"❌ فشل تجديد التوكن للمتجر {store_id}")
+                    return None
 
+            # 4. إعادة البيانات إذا كان الطلب ناجحاً
+            if resp.status_code in [200, 201]:
+                return resp.json()
+            else:
+                logger.error(f"⚠️ Salla API Error [{resp.status_code}]: {resp.text}")
+                return None
+
+    except Exception as e:
+        logger.error(f"❌ خطأ غير متوقع في salla_request: {str(e)}")
+        return None
 async def refresh_salla_token(store_id: str) -> Optional[str]:
-    """تجديد توكن سلة تلقائياً عند انتهائه"""
-    res = supabase.table("store_settings").select("*").eq("store_id", store_id).single().execute()
-    if not res.data: return None
+    # جلب البيانات عبر SQL
+    query = "SELECT client_id, client_secret, refresh_token FROM store_settings WHERE store_id = :sid"
+    row = execute_db_query(query, {"sid": store_id}, fetch="one")
     
-    s = res.data
+    if not row: return None
+    
     url = "https://accounts.salla.sa/oauth2/token"
     payload = {
-        "client_id": s["client_id"],
-        "client_secret": s["client_secret"],
+        "client_id": row[0],
+        "client_secret": row[1],
         "grant_type": "refresh_token",
-        "refresh_token": s["refresh_token"]
+        "refresh_token": row[2]
     }
     
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, data=payload)
         if resp.status_code == 200:
             data = resp.json()
-            supabase.table("store_settings").update({
-                "salla_access_token": data["access_token"],
-                "refresh_token": data["refresh_token"]
-            }).eq("store_id", store_id).execute()
+            # تحديث البيانات عبر SQL
+            update_query = """
+                UPDATE store_settings 
+                SET salla_access_token = :access, refresh_token = :refresh 
+                WHERE store_id = :sid
+            """
+            execute_db_query(update_query, {
+                "access": data["access_token"],
+                "refresh": data["refresh_token"],
+                "sid": store_id
+            })
             return data["access_token"]
     return None
-
 async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
-    """جلب بيانات الطلب مع محاولة تجديد التوكن إذا لزم الأمر"""
-    res = supabase.table("store_settings").select("salla_access_token").eq("store_id", store_id).single().execute()
-    token = res.data["salla_access_token"]
-    
-    url = f"https://api.salla.dev/admin/v2/orders/{order_id}"
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers)
-        if resp.status_code == 401: # Token Expired
-            token = await refresh_salla_token(store_id)
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-                resp = await client.get(url, headers=headers)
+    """جلب بيانات الطلب من سلة باستخدام PostgreSQL لجلب التوكن"""
+    try:
+        # 1. جلب التوكن مباشرة من PostgreSQL
+        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
         
-        if resp.status_code == 200:
-            d = resp.json()["data"]
-            return f"طلب {d['reference_id']}: حالة {d['status']['name']}, تتبع: {d['shipping'].get('tracking_link', 'قريباً')}"
-    return None
+        if not row:
+            logger.error(f"❌ لم يتم العثور على إعدادات للمتجر {store_id}")
+            return None
+            
+        token = row[0]
+        
+        url = f"https://api.salla.dev/admin/v2/orders/{order_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers)
+            
+            # 2. إذا انتهى التوكن (401)، نقوم بتجديده
+            if resp.status_code == 401:
+                logger.info(f"🔄 التوكن انتهى للمتجر {store_id}، جاري التجديد...")
+                new_token = await refresh_salla_token(store_id)
+                if new_token:
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    resp = await client.get(url, headers=headers)
+            
+            # 3. معالجة بيانات الطلب
+            if resp.status_code == 200:
+                d = resp.json()["data"]
+                # تنسيق الرد للعميل
+                ref_id = d.get('reference_id')
+                status_name = d.get('status', {}).get('name', 'غير معروفة')
+                tracking = d.get('shipping', {}).get('tracking_link')
+                
+                msg = f"📦 تفاصيل الطلب رقم {ref_id}:\n- الحالة: {status_name}"
+                if tracking:
+                    msg += f"\n- رابط التتبع: {tracking}"
+                else:
+                    msg += "\n- التتبع: سيتم تحديثه قريباً."
+                
+                return msg
+
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ خطأ في get_salla_order للمتجر {store_id}: {e}")
+        return "عذراً، لم أتمكن من جلب تفاصيل الطلب حالياً."
 
 # --- خدمات الذكاء الاصطناعي (GROK xAI) ---
 
@@ -676,21 +754,54 @@ async def send_via_web_bridge(store_id: str, phone: str, text: str):
         return False
 
 async def get_merchant_stats(store_id: str):
-    """جلب إحصائيات المتجر من سلة"""
-    res = supabase.table("store_settings").select("salla_access_token").eq("store_id", store_id).single().execute()
-    token = res.data["salla_access_token"]
-    
-    headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient() as client:
-        # 1. جلب إحصائيات الطلبات
-        orders_resp = await client.get("https://api.salla.dev/admin/v2/reports/orders", headers=headers)
-        # 2. جلب السلال المتروكة
-        abandoned_resp = await client.get("https://api.salla.dev/admin/v2/abandoned-carts", headers=headers)
+    """جلب إحصائيات المتجر من سلة باستخدام PostgreSQL لجلب التوكن"""
+    try:
+        # 1. جلب التوكن مباشرة من قاعدة البيانات
+        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
         
-        return {
-            "orders": orders_resp.json().get("data"),
-            "abandoned_carts_count": abandoned_resp.json().get("pagination", {}).get("total")
+        if not row:
+            logger.error(f"❌ لم يتم العثور على توكن للمتجر {store_id}")
+            return {"orders": None, "abandoned_carts_count": 0}
+
+        token = row[0]
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
         }
+
+        async with httpx.AsyncClient() as client:
+            # 2. جلب إحصائيات الطلبات
+            orders_resp = await client.get("https://api.salla.dev/admin/v2/reports/orders", headers=headers)
+            
+            # 3. جلب السلال المتروكة
+            abandoned_resp = await client.get("https://api.salla.dev/admin/v2/abandoned-carts", headers=headers)
+
+            # 4. التعامل مع احتمالية انتهاء التوكن (401)
+            if orders_resp.status_code == 401 or abandoned_resp.status_code == 401:
+                logger.info(f"🔄 تجديد التوكن للمتجر {store_id} أثناء جلب الإحصائيات...")
+                new_token = await refresh_salla_token(store_id)
+                if new_token:
+                    # إعادة المحاولة بالتوكن الجديد
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    orders_resp = await client.get("https://api.salla.dev/admin/v2/reports/orders", headers=headers)
+                    abandoned_resp = await client.get("https://api.salla.dev/admin/v2/abandoned-carts", headers=headers)
+
+            # 5. استخراج البيانات بأمان
+            orders_data = orders_resp.json().get("data") if orders_resp.status_code == 200 else None
+            
+            abandoned_count = 0
+            if abandoned_resp.status_code == 200:
+                abandoned_count = abandoned_resp.json().get("pagination", {}).get("total", 0)
+
+            return {
+                "orders": orders_data,
+                "abandoned_carts_count": abandoned_count
+            }
+
+    except Exception as e:
+        logger.error(f"❌ خطأ في get_merchant_stats للمتجر {store_id}: {e}")
+        return {"orders": None, "abandoned_carts_count": 0}
         
 async def close_inactive_stores(max_idle_time=3600):
     """إغلاق صفحات المتاجر التي لم ترسل رسائل منذ ساعة لتوفير الرام"""
@@ -699,86 +810,132 @@ async def close_inactive_stores(max_idle_time=3600):
 
 
 async def send_admin_alert(store_id: str, customer_phone: str, last_message: str):
-    """إرسال تنبيه لمالك المتجر عند طلب تدخل بشري"""
-    # جلب رقم جوال التاجر (الآدمن) من قاعدة البيانات
-    res = supabase.table("store_settings").select("admin_phone").eq("store_id", store_id).single().execute()
-    if not res.data or not res.data.get("admin_phone"): return
+    """إرسال تنبيه لمالك المتجر عبر PostgreSQL عند الحاجة لتدخل بشري"""
+    try:
+        # 1. جلب رقم جوال الآدمن مباشرة من قاعدة البيانات
+        query = "SELECT admin_phone FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
 
-    admin_phone = res.data["admin_phone"]
-    alert_text = (
-        f"🚨 *تنبيه تدخل بشري!*\n\n"
-        f"🏪 متجر: {store_id}\n"
-        f"👤 العميل: {customer_phone}\n"
-        f"💬 آخر رسالة: {last_message}\n\n"
-        f"يرجى الدخول للوحة التحكم للرد."
-    )
-    
-    # نستخدم نفس دالة الإرسال لكن للتاجر
-    await send_whatsapp_dynamic(store_id, admin_phone, alert_text)
+        # 2. التحقق من وجود رقم المسجّل
+        if not row or not row[0]:
+            logger.warning(f"⚠️ تنبيه: لم يتم العثور على رقم أدمن للمتجر {store_id}")
+            return
+
+        admin_phone = row[0]
+        
+        # 3. صياغة نص التنبيه بشكل احترافي
+        alert_text = (
+            f"🚨 *تنبيه تدخل بشري!*\n\n"
+            f"🏪 *المتجر:* {store_id}\n"
+            f"👤 *العميل:* {customer_phone}\n"
+            f"💬 *آخر رسالة:* {last_message}\n\n"
+            f"📥 يرجى الدخول للوحة التحكم للرد على العميل."
+        )
+        
+        # 4. الإرسال عبر الواتساب (باستخدام نظام الـ Web Bridge الذي أعددته)
+        # نستخدم Background Task لضمان عدم تأخير البوت الأساسي
+        await send_whatsapp_dynamic(store_id, admin_phone, alert_text)
+        
+        logger.info(f"🔔 تم إرسال تنبيه تدخل بشري لآدمن المتجر {store_id}")
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء إرسال تنبيه الآدمن للمتجر {store_id}: {e}")
 
 # --- خدمات سلة شات (Salla Chat API) ---
 
 async def send_salla_chat(store_id: str, conversation_id: str, text: str):
-    """إرسال رد مباشر إلى محادثة العميل داخل متجر سلة"""
-    # جلب التوكن الحالي
-    res = supabase.table("store_settings").select("salla_access_token").eq("store_id", store_id).single().execute()
-    token = res.data["salla_access_token"]
-    
-    url = f"https://api.salla.dev/admin/v2/chats/{conversation_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json={"message": text}, headers=headers)
-        if resp.status_code == 401: # محاولة تجديد التوكن إذا انتهى
-            new_token = await refresh_salla_token(store_id)
-            if new_token:
-                headers["Authorization"] = f"Bearer {new_token}"
-                await client.post(url, json={"message": text}, headers=headers)
+    """إرسال رد مباشر إلى محادثة العميل داخل متجر سلة باستخدام PostgreSQL"""
+    try:
+        # 1. جلب التوكن الحالي من قاعدة البيانات مباشرة
+        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
+        
+        if not row:
+            logger.error(f"❌ تعذر العثور على توكن للمتجر {store_id} لإرسال الشات.")
+            return
+
+        token = row[0]
+        url = f"https://api.salla.dev/admin/v2/chats/{conversation_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            # 2. محاولة إرسال الرسالة
+            resp = await client.post(url, json={"message": text}, headers=headers)
+            
+            # 3. معالجة انتهاء صلاحية التوكن (401)
+            if resp.status_code == 401:
+                logger.info(f"🔄 توكن المتجر {store_id} منتهي، جاري التجديد لإرسال الشات...")
+                new_token = await refresh_salla_token(store_id)
+                if new_token:
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    resp = await client.post(url, json={"message": text}, headers=headers)
+            
+            # 4. التحقق من نجاح الإرسال
+            if resp.status_code in [200, 201]:
+                logger.info(f"✅ تم إرسال الرد بنجاح لشات سلة (المحادثة: {conversation_id})")
+            else:
+                logger.error(f"⚠️ فشل إرسال شات سلة [{resp.status_code}]: {resp.text}")
+
+    except Exception as e:
+        logger.error(f"❌ خطأ في دالة send_salla_chat: {str(e)}")
 
 
 async def check_abandoned_carts_and_remind(store_id: str):
-    """البحث عن السلال المتروكة وإرسال تذكير ذكي للعملاء"""
-    # 1. جلب بيانات السلال المتروكة من سلة
-    carts_data = await salla_request("GET", "abandoned-carts", store_id)
-    if not carts_data or "data" not in carts_data:
-        return
+    """البحث عن السلال المتروكة وإرسال تذكير عبر PostgreSQL لمنع التكرار"""
+    try:
+        # 1. جلب بيانات السلال المتروكة من سلة (باستخدام الدالة الموحدة المحدثة)
+        carts_data = await salla_request("GET", "abandoned-carts", store_id)
+        if not carts_data or "data" not in carts_data:
+            logger.info(f"Empty abandoned carts for store {store_id}")
+            return
 
-    for cart in carts_data["data"]:
-        # التحقق مما إذا كان العميل قد تم تذكيره سابقاً (لتجنب الإزعاج)
-        cart_id = str(cart["id"])
-        is_reminded = supabase.table("reminders_log").select("*").eq("cart_id", cart_id).execute()
-        
-        if not is_reminded.data:
-            customer_phone = cart["customer"]["mobile"]
-            customer_name = cart["customer"]["first_name"]
-            cart_url = cart["checkout_url"] # رابط العودة للسلة
+        for cart in carts_data["data"]:
+            cart_id = str(cart["id"])
             
-            # إنشاء رسالة تذكير جذابة (يمكن جعلها ذكية عبر Grok)
-            reminder_text = (
-                f"يا هلا يا {customer_name} 🌹،\n\n"
-                f"لاحظنا إنك تركت بعض المنتجات الرائعة في سلتك بمتجرنا. "
-                f"حبينا نذكرك إنها لسه بانتظارك وممكن تنفد في أي وقت!\n\n"
-                f"بإمكانك إكمال طلبك مباشرة من هنا:\n{cart_url}\n\n"
-                f"إذا واجهت أي مشكلة، أنا هنا لمساعدتك."
-            )
+            # 2. التحقق عبر SQL إذا كان العميل قد استلم تذكيراً لهذه السلة سابقاً
+            check_query = "SELECT id FROM reminders_log WHERE cart_id = :cid LIMIT 1"
+            already_reminded = execute_db_query(check_query, {"cid": cart_id}, fetch="one")
             
-            # وضع الرسالة في الطابور للإرسال عبر المتصفح
-            await message_queue.put((customer_phone, reminder_text))
-            
-            # تسجيل التذكير في قاعدة البيانات لعدم التكرار
-            supabase.table("reminders_log").insert({
-                "cart_id": cart_id,
-                "store_id": store_id,
-                "customer_phone": customer_phone,
-                "sent_at": datetime.now().isoformat()
-            }).execute()
-            
-            # انتظار بسيط لتجنب الضغط على السيرفر أثناء المعالجة
-            await asyncio.sleep(2)
+            if not already_reminded:
+                customer_phone = cart["customer"]["mobile"]
+                customer_name = cart["customer"]["first_name"]
+                cart_url = cart.get("checkout_url")
+                
+                # صياغة الرسالة
+                reminder_text = (
+                    f"يا هلا يا {customer_name} 🌹،\n\n"
+                    f"لاحظنا إنك تركت بعض المنتجات الرائعة في سلتك بمتجرنا. "
+                    f"حبينا نذكرك إنها لسه بانتظارك وممكن تنفد في أي وقت!\n\n"
+                    f"بإمكانك إكمال طلبك مباشرة من هنا:\n{cart_url}\n\n"
+                    f"إذا واجهت أي مشكلة، أنا هنا لمساعدتك."
+                )
+                
+                # 3. وضع الرسالة في طابور الإرسال (واتساب ويب)
+                # نمرر store_id لضمان الإرسال من متصفح المتجر الصحيح
+                await message_queue.put((store_id, customer_phone, reminder_text))
+                
+                # 4. تسجيل التذكير في PostgreSQL لضمان عدم التكرار
+                insert_query = """
+                    INSERT INTO reminders_log (cart_id, store_id, customer_phone, sent_at)
+                    VALUES (:cid, :sid, :phone, NOW())
+                """
+                execute_db_query(insert_query, {
+                    "cid": cart_id,
+                    "sid": store_id,
+                    "phone": customer_phone
+                })
+                
+                logger.info(f"✅ تم تسجيل تذكير جديد للسلة {cart_id} للمتجر {store_id}")
+                
+                # انتظار بسيط لتجنب الحظر وتخفيف الضغط على المعالج
+                await asyncio.sleep(2)
+
+    except Exception as e:
+        logger.error(f"❌ خطأ في دالة السلال المتروكة للمتجر {store_id}: {e}")
 
 
 async def cron_scheduler():
@@ -1039,95 +1196,100 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
 
     # 1. تحديث حالة الاشتراك
     if event == "app.subscription.started":
-        supabase.table("store_settings").update({"is_active": True}).eq("store_id", store_id).execute()
+        query = "UPDATE store_settings SET is_active = True WHERE store_id = :sid"
+        execute_db_query(query, {"sid": store_id})
     elif event == "app.subscription.expired":
-        supabase.table("store_settings").update({"is_active": False}).eq("store_id", store_id).execute()
+        query = "UPDATE store_settings SET is_active = False WHERE store_id = :sid"
+        execute_db_query(query, {"sid": store_id})
 
-    # 2. ميزة تتبع الأرباح (عند إنشاء طلب جديد)
+    # 2. تتبع الأرباح المستردة (ROI)
     if event == "order.created":
         order_data = data.get("data", {})
         customer_phone = order_data.get("customer", {}).get("mobile")
-        order_total = order_data.get("total", {}).get("amount") # قيمة الطلب
+        order_total = order_data.get("total", {}).get("amount")
         
-        # البحث عن آخر تذكير أرسله البوت لهذا الرقم في آخر 24 ساعة
-        recent_reminder = supabase.table("reminders_log")\
-            .select("id")\
-            .eq("customer_phone", customer_phone)\
-            .eq("store_id", store_id)\
-            .order("sent_at", desc=True)\
-            .limit(1).execute()
+        # البحث عن آخر تذكير في آخر 24 ساعة باستخدام SQL
+        check_query = """
+            SELECT id FROM reminders_log 
+            WHERE customer_phone = :phone AND store_id = :sid 
+            AND sent_at > NOW() - INTERVAL '24 hours'
+            ORDER BY sent_at DESC LIMIT 1
+        """
+        recent_reminder = execute_db_query(check_query, {"phone": customer_phone, "sid": store_id}, fetch="one")
             
-        if recent_reminder.data:
-            # 💡 تحديث السجل: هذا الطلب تم بفضل البوت!
-            reminder_id = recent_reminder.data[0]["id"]
-            supabase.table("reminders_log").update({
-                "is_recovered": True,
-                "recovered_amount": order_total,
-                "recovered_at": datetime.now().isoformat()
-            }).eq("id", reminder_id).execute()
-            logger.info(f"💰 مبيعات مستردة! الطلب تم بفضل البوت للمتجر {store_id}")
+        if recent_reminder:
+            # تحديث السجل لإثبات أن البيعة تمت بفضل البوت
+            update_query = """
+                UPDATE reminders_log SET 
+                is_recovered = True, recovered_amount = :amount, recovered_at = NOW()
+                WHERE id = :rid
+            """
+            execute_db_query(update_query, {"amount": order_total, "rid": recent_reminder[0]})
+            logger.info(f"💰 مبيعات مستردة بقيمة {order_total} للمتجر {store_id}")
 
-    # 3. ميزة تسليم المنتجات الرقمية (عند تحديث الطلب لـ تم التنفيذ)
+    # 3. تسليم المنتجات الرقمية
     elif event == "order.updated":
         order_data = data.get("data", {})
-        status = order_data.get("status", {}).get("id")
-        
-        if status == 21: # حالة "تم التنفيذ"
-            order_id = order_data.get("id")
-            customer_phone = order_data.get("customer", {}).get("mobile")
-            items = order_data.get("items", [])
+        if order_data.get("status", {}).get("id") == 21: # "تم التنفيذ"
             digital_contents = []
-
-            for item in items:
-                codes = item.get("codes", [])
-                files = item.get("files", [])
-                if codes:
-                    for code in codes: digital_contents.append(f"🔑 كود {item['name']}: {code['code']}")
-                if files:
-                    for file in files: digital_contents.append(f"📁 ملف {item['name']}: {file['url']}")
+            for item in order_data.get("items", []):
+                for code in item.get("codes", []): 
+                    digital_contents.append(f"🔑 كود {item['name']}: {code['code']}")
+                for file in item.get("files", []): 
+                    digital_contents.append(f"📁 ملف {item['name']}: {file['url']}")
 
             if digital_contents:
-                delivery_msg = f"🎉 *تم تنفيذ طلبك #{order_id}*\n\n" + "\n".join(digital_contents)
-                background_tasks.add_task(message_queue.put, (store_id, customer_phone, delivery_msg))
+                delivery_msg = f"🎉 *تم تنفيذ طلبك #{order_data.get('id')}*\n\n" + "\n".join(digital_contents)
+                background_tasks.add_task(message_queue.put, (store_id, order_data.get("customer", {}).get("mobile"), delivery_msg))
 
-    # 4. معالجة رسائل الشات والذكاء الاصطناعي
+    # 4. معالجة الشات والذكاء الاصطناعي
     elif event == "chat.message.created":
         msg_data = data.get("data", {})
         if msg_data.get("type") == "sent_by_customer":
-            conversation_id = msg_data.get("conversation_id")
+            phone = msg_data.get("customer", {}).get("mobile")
             text = msg_data.get("message")
-            customer_info = msg_data.get("customer", {})
-            phone = customer_info.get("mobile")
-            salla_id = str(msg_data.get("customer_id"))
-
-            # توحيد هوية العميل وحفظ الرسالة
-            cust = supabase.table("customers").upsert({
-                "phone_number": phone, "salla_customer_id": salla_id,
-                "name": f"{customer_info.get('first_name', '')} {customer_info.get('last_name', '')}"
-            }, on_conflict="phone_number").execute()
-            cust_db_id = cust.data[0]['id']
-            supabase.table("conversations").insert({"customer_id": cust_db_id, "role": "user", "content": text}).execute()
             
-            # تحليل وتوليد رد عبر Grok
+            # حفظ/تحديث بيانات العميل وجلب الـ ID الخاص به في PostgreSQL
+            cust_query = """
+                INSERT INTO customers (phone_number, salla_customer_id, name)
+                VALUES (:phone, :s_id, :name)
+                ON CONFLICT (phone_number) DO UPDATE SET name = EXCLUDED.name
+                RETURNING id
+            """
+            cust_row = execute_db_query(cust_query, {
+                "phone": phone, 
+                "s_id": str(msg_data.get("customer_id")),
+                "name": f"{msg_data.get('customer', {}).get('first_name', '')} {msg_data.get('customer', {}).get('last_name', '')}"
+            }, fetch="one")
+            
+            cust_db_id = cust_row[0]
+
+            # تسجيل رسالة العميل
+            execute_db_query("INSERT INTO conversations (customer_id, role, content) VALUES (:cid, 'user', :txt)", 
+                             {"cid": cust_db_id, "txt": text})
+            
+            # جلب إعدادات الرد وتاريخ المحادثة (آخر 5 رسائل)
+            settings = execute_db_query("SELECT system_prompt FROM store_settings WHERE store_id = :sid", {"sid": store_id}, fetch="one")
+            history_rows = execute_db_query("SELECT role, content FROM conversations WHERE customer_id = :cid ORDER BY created_at DESC LIMIT 5", 
+                                            {"cid": cust_db_id}, fetch="all")
+            history = [{"role": r[0], "content": r[1]} for r in reversed(history_rows)]
+
+            # تحليل الرد عبر Grok
             analysis = await grok_analyze_intent(text)
             context = await get_salla_order(analysis["order_id"], store_id) if analysis["order_id"] else ""
-            history_res = supabase.table("conversations").select("role, content").eq("customer_id", cust_db_id).order("created_at", desc=True).limit(5).execute()
-            history = [{"role": r["role"], "content": r["content"]} for r in reversed(history_res.data)]
-            settings = supabase.table("store_settings").select("system_prompt").eq("store_id", store_id).single().execute()
-            reply = await grok_generate_reply(history, context, settings.data["system_prompt"])
+            reply = await grok_generate_reply(history, context, settings[0] if settings else "You are a helpful assistant")
 
-            # التحقق من التدخل البشري والرد
+            # التدخل البشري والرد
             if "[HUMAN_REQUIRED]" in reply or "موظف" in text:
                 background_tasks.add_task(send_admin_alert, store_id, phone, text)
-                human_msg = "تم تحويل طلبك للموظف المختص، سيتواصل معك أحد زملائنا قريباً."
-                background_tasks.add_task(send_salla_chat, store_id, conversation_id, human_msg)
-                supabase.table("conversations").insert({"customer_id": cust_db_id, "role": "system", "content": "human_transfer_triggered"}).execute()
-            else:
-                supabase.table("conversations").insert({"customer_id": cust_db_id, "role": "assistant", "content": reply}).execute()
-                background_tasks.add_task(send_salla_chat, store_id, conversation_id, reply)
+                reply = "تم تحويل طلبك للموظف المختص، سيتواصل معك قريباً."
+            
+            # تسجيل رد البوت وإرساله
+            execute_db_query("INSERT INTO conversations (customer_id, role, content) VALUES (:cid, 'assistant', :txt)", 
+                             {"cid": cust_db_id, "txt": reply})
+            background_tasks.add_task(send_salla_chat, store_id, msg_data.get("conversation_id"), reply)
 
     return {"status": "ok"}
-
 
 
 from fastapi.responses import HTMLResponse
@@ -1150,8 +1312,7 @@ async def admin_panel(store_id: str):
 
 @app.get("/admin/dashboard/{store_id}")
 async def get_dashboard_data(store_id: str):
-    """جلب كافة بيانات لوحة التحكم: الأرباح، الرسم البياني، المحادثات، وحالة الاتصال"""
-    # ملاحظة: تأكد من تعريف browser_instance في المستوى العام للملف
+    """جلب كافة بيانات لوحة التحكم باستخدام PostgreSQL المباشر"""
     global browser_instance
     
     try:
@@ -1160,133 +1321,152 @@ async def get_dashboard_data(store_id: str):
         last_week = today - timedelta(days=7)
 
         # 2. جلب سجلات الاسترداد الناجحة (الأرباح)
-        revenue_res = supabase.table("reminders_log") \
-                .select("recovered_amount, recovered_at") \
-                .eq("store_id", store_id) \
-                .eq("is_recovered", True) \
-                .gte("recovered_at", last_week.isoformat()) \
-                .execute()
+        rev_query = """
+            SELECT recovered_amount, recovered_at 
+            FROM reminders_log 
+            WHERE store_id = :sid AND is_recovered = TRUE AND recovered_at >= :last_week
+        """
+        revenue_data = execute_db_query(rev_query, {"sid": store_id, "last_week": last_week}, fetch="all") or []
         
-        revenue_data = revenue_res.data or []
-        total_revenue = sum(float(row['recovered_amount']) for row in revenue_data)
+        # تجميع الأرباح
+        total_revenue = sum(float(row[0] or 0) for row in revenue_data)
 
         # 3. معالجة بيانات الرسم البياني
         days_map = {}
         arabic_days = {
-                "Saturday": "السبت", "Sunday": "الأحد", "Monday": "الاثنين", 
-                "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء", "Thursday": "الخميس", "Friday": "الجمعة"
+            "Saturday": "السبت", "Sunday": "الأحد", "Monday": "الاثنين", 
+            "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء", "Thursday": "الخميس", "Friday": "الجمعة"
         }
         
-        # ترتيب الأيام لضمان ظهورها بشكل صحيح من الأقدم للأحدث
         for i in range(6, -1, -1):
-                d = today - timedelta(days=i)
-                days_map[d.strftime('%A')] = 0
+            d = today - timedelta(days=i)
+            days_map[d.strftime('%A')] = 0
 
         for row in revenue_data:
-                # تحويل النص إلى كائن datetime للتأكد من اليوم
-                dt_obj = datetime.fromisoformat(row['recovered_at'].replace('Z', '+00:00'))
-                d_name = dt_obj.strftime('%A')
-                if d_name in days_map:
-                        days_map[d_name] += float(row['recovered_amount'])
+            dt_val = row[1]
+            if isinstance(dt_val, str):
+                dt_obj = datetime.fromisoformat(dt_val.replace('Z', '+00:00'))
+            else:
+                dt_obj = dt_val
+            
+            d_name = dt_obj.strftime('%A')
+            if d_name in days_map:
+                days_map[d_name] += float(row[0] or 0)
 
         chart_labels = [arabic_days[d] for d in days_map.keys()]
         chart_values = list(days_map.values())
 
         # 4. جلب إحصائيات سلة والردود الآلية
-        conv_count = supabase.table("conversations") \
-                .select("id", count="exact").eq("role", "assistant").execute()
-            
-        abandoned_res = supabase.table("reminders_log") \
-                .select("id", count="exact").eq("store_id", store_id).execute()
+        conv_count = execute_db_query("SELECT COUNT(id) FROM conversations WHERE role = 'assistant'", fetch="one")
+        abandoned_res = execute_db_query("SELECT COUNT(id) FROM reminders_log WHERE store_id = :sid", {"sid": store_id}, fetch="one")
 
-        # جلب أحدث عملية استرداد لإرسال التنبيه (Toast)
-        recent_recoveries_res = supabase.table("reminders_log") \
-                .select("id, recovered_amount, customer_phone") \
-                .eq("store_id", store_id) \
-                .eq("is_recovered", True) \
-                .order("recovered_at", desc=True) \
-                .limit(1) \
-                .execute()
+        # جلب أحدث عملية استرداد لإرسال التنبيه
+        recent_recovery_query = """
+            SELECT id, recovered_amount, customer_phone 
+            FROM reminders_log 
+            WHERE store_id = :sid AND is_recovered = TRUE 
+            ORDER BY recovered_at DESC LIMIT 1
+        """
+        recent_recovery = execute_db_query(recent_recovery_query, {"sid": store_id}, fetch="one")
+        recent_recoveries_list = []
+        if recent_recovery:
+            recent_recoveries_list.append({
+                "id": recent_recovery[0], 
+                "amount": float(recent_recovery[1]), 
+                "phone": recent_recovery[2]
+            })
 
-        # 5. جلب آخر 10 محادثات
-        recent_chats = supabase.table("conversations") \
-                .select("*, customers(phone_number)") \
-                .order("created_at", desc=True).limit(10).execute()
+        # 5. جلب آخر 10 محادثات مع ربط الجداول (JOIN)
+        recent_chats_query = """
+            SELECT c.id, c.customer_id, c.role, c.content, c.created_at, cu.phone_number 
+            FROM conversations c 
+            LEFT JOIN customers cu ON c.customer_id = cu.id 
+            ORDER BY c.created_at DESC LIMIT 10
+        """
+        recent_chats_data = execute_db_query(recent_chats_query, fetch="all") or []
+        recent_chats = [
+            {
+                "id": r[0], "customer_id": r[1], "role": r[2], "content": r[3], 
+                "created_at": r[4], "customers": {"phone_number": r[5]}
+            }
+            for r in recent_chats_data
+        ]
 
         # 6. فحص حالة المتصفح (Playwright)
         is_browser_alive = False
         try:
-                # تأكد أن المتصفح يعمل ولم يتم إغلاقه بواسطة ريندر بسبب استهلاك الرام
-                if 'browser_instance' in globals() and browser_instance and browser_instance.is_connected():
-                        is_browser_alive = True
+            if 'browser_instance' in globals() and browser_instance and browser_instance.is_connected():
+                is_browser_alive = True
         except:
-                is_browser_alive = False
+            is_browser_alive = False
 
-        # 7. الرد النهائي الموحد بإزاحة 8 مسافات
+        # 7. الرد النهائي
         return {
-                "summary": {
-                        "total_revenue_saved": total_revenue
-                },
-                "recent_recoveries": [
-                        {"id": r['id'], "amount": float(r['recovered_amount']), "phone": r['customer_phone']} 
-                        for r in (recent_recoveries_res.data or [])
-                ],
-                "bot_usage": conv_count.count if conv_count.count else 0,
-                "salla_stats": {
-                        "abandoned_carts_count": abandoned_res.count if abandoned_res.count else 0
-                },
-                "charts_data": {
-                        "labels": chart_labels,
-                        "values": chart_values
-                },
-                "recent_activity": recent_chats.data if recent_chats.data else [],
-                "browser_connected": is_browser_alive
+            "summary": {
+                "total_revenue_saved": total_revenue
+            },
+            "recent_recoveries": recent_recoveries_list,
+            "bot_usage": conv_count[0] if conv_count else 0,
+            "salla_stats": {
+                "abandoned_carts_count": abandoned_res[0] if abandoned_res else 0
+            },
+            "charts_data": {
+                "labels": chart_labels,
+                "values": chart_values
+            },
+            "recent_activity": recent_chats,
+            "browser_connected": is_browser_alive
         }
 
     except Exception as e:
         logger.error(f"Dashboard Data Error: {str(e)}")
         return {"error": f"حدث خطأ أثناء تحديث البيانات: {str(e)}"}
 
+
 @app.get("/admin/advanced-stats/{store_id}")
 async def get_advanced_analytics(store_id: str):
     try:
         # 1. إجمالي السلال المتروكة التي تمت مراسلتها
-        reminded_carts = supabase.table("reminders_log")\
-            .select("cart_id", count="exact")\
-            .eq("store_id", store_id).execute()
+        reminded_query = "SELECT COUNT(cart_id) FROM reminders_log WHERE store_id = :sid"
+        reminded_carts = execute_db_query(reminded_query, {"sid": store_id}, fetch="one")
+        total_reminders = reminded_carts[0] if reminded_carts else 0
         
-        # 2. جلب الطلبات الناجحة التي تمت "بعد" إرسال تذكير (تحويل ناجح)
-        # نقوم بمقارنة أرقام الجوال في السلال المتروكة مع الطلبات الجديدة
-        successful_recoveries = supabase.table("reminders_log")\
-            .select("customer_phone, cart_id")\
-            .eq("store_id", store_id)\
-            .eq("is_recovered", True).execute() # نحتاج إضافة حقل is_recovered للجدول
+        # 2. جلب الطلبات الناجحة التي تمت "بعد" إرسال تذكير
+        success_query = "SELECT COUNT(cart_id) FROM reminders_log WHERE store_id = :sid AND is_recovered = TRUE"
+        successful_recoveries = execute_db_query(success_query, {"sid": store_id}, fetch="one")
+        total_recoveries = successful_recoveries[0] if successful_recoveries else 0
 
-        # 3. حساب إجمالي الأرباح المستردة (Sum of Order Totals)
-        # نفترض وجود حقل recovered_amount في جدول السجلات
-        total_recovered_revenue = supabase.rpc('get_total_recovered', {'store_param': store_id}).execute()
+        # 3. حساب إجمالي الأرباح المستردة (باستخدام دالة التجميع SUM بدلاً من RPC لتكون أسرع وأضمن)
+        revenue_query = "SELECT SUM(recovered_amount) FROM reminders_log WHERE store_id = :sid AND is_recovered = TRUE"
+        total_revenue = execute_db_query(revenue_query, {"sid": store_id}, fetch="one")
+        total_recovered_revenue = float(total_revenue[0] or 0)
 
         # 4. أداء الذكاء الاصطناعي (AI vs Human)
-        ai_responses = supabase.table("conversations")\
-            .select("id", count="exact").eq("role", "assistant").execute()
+        ai_query = "SELECT COUNT(id) FROM conversations WHERE role = 'assistant'"
+        ai_responses = execute_db_query(ai_query, fetch="one")
+        total_ai_chats = ai_responses[0] if ai_responses else 0
             
-        human_requests = supabase.table("conversations")\
-            .select("id", count="exact").eq("content", "human_transfer_triggered").execute()
+        human_query = "SELECT COUNT(id) FROM conversations WHERE content = 'human_transfer_triggered'"
+        human_requests = execute_db_query(human_query, fetch="one")
+        total_human_reqs = human_requests[0] if human_requests else 0
+
+        recovery_rate = (total_recoveries / total_reminders * 100) if total_reminders else 0
+        human_rate = (total_human_reqs / total_ai_chats * 100) if total_ai_chats else 0
 
         return {
             "summary": {
-                "total_reminders_sent": reminded_carts.count or 0,
-                "recovered_carts_count": len(successful_recoveries.data) or 0,
-                "recovery_rate": f"{(len(successful_recoveries.data) / reminded_carts.count * 100) if reminded_carts.count else 0:.1f}%",
-                "total_revenue_saved": total_recovered_revenue.data or 0
+                "total_reminders_sent": total_reminders,
+                "recovered_carts_count": total_recoveries,
+                "recovery_rate": f"{recovery_rate:.1f}%",
+                "total_revenue_saved": total_recovered_revenue
             },
             "ai_performance": {
-                "automated_chats": ai_responses.count or 0,
-                "human_intervention_rate": f"{(human_requests.count / ai_responses.count * 100) if ai_responses.count else 0:.1f}%"
+                "automated_chats": total_ai_chats,
+                "human_intervention_rate": f"{human_rate:.1f}%"
             },
             "charts_data": {
                 "labels": ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"],
-                "data": [12, 19, 3, 5, 2, 3, 10] # بيانات تجريبية للرسم البياني
+                "data": [12, 19, 3, 5, 2, 3, 10]
             }
         }
     except Exception as e:
@@ -1298,10 +1478,16 @@ async def get_advanced_analytics(store_id: str):
 async def update_config(store_id: str, settings: dict):
     """تحديث إعدادات المسؤول والبرومبت من لوحة التحكم"""
     try:
-        supabase.table("store_settings").update({
-            "admin_phone": settings.get("admin_phone"),
-            "system_prompt": settings.get("system_prompt")
-        }).eq("store_id", store_id).execute()
+        query = """
+            UPDATE store_settings 
+            SET admin_phone = :phone, system_prompt = :prompt 
+            WHERE store_id = :sid
+        """
+        execute_db_query(query, {
+            "phone": settings.get("admin_phone"),
+            "prompt": settings.get("system_prompt"),
+            "sid": store_id
+        })
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1309,23 +1495,53 @@ async def update_config(store_id: str, settings: dict):
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
-    # نطلب الصفحة الخاصة بهذا التاجر تحديداً
-    page = await get_handler_for_store(store_id)
-    
+    """جلب رمز QR الخاص بواتساب للمتجر مع التحقق من حالته في PostgreSQL"""
     try:
-        await page.wait_for_selector("canvas", timeout=15000)
-        qr_element = await page.query_selector("canvas")
-        img_bytes = await qr_element.screenshot()
-        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-        return {"qr_code": f"data:image/png;base64,{img_base64}"}
-    except:
-        return {"status": "connected", "message": "الجهاز مرتبك بالفعل"}
+        # 1. التحقق من وجود المتجر وصلاحيته في قاعدة البيانات
+        query = "SELECT is_active FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
+        
+        if not row:
+            return {"status": "error", "message": "المتجر غير مسجل في النظام"}
+
+        # 2. الحصول على صفحة المتصفح (Handler) المخصصة لهذا التاجر
+        # ملاحظة: get_handler_for_store يجب أن تدير الـ Sessions بناءً على store_id
+        page = await get_handler_for_store(store_id)
+        
+        if not page:
+            return {"status": "error", "message": "فشل فتح جلسة المتصفح للمتجر"}
+
+        # 3. محاولة التقاط رمز الـ QR
+        try:
+            # ننتظر ظهور الـ Canvas الذي يحتوي على الـ QR
+            await page.wait_for_selector("canvas", timeout=10000)
+            qr_element = await page.query_selector("canvas")
+            
+            if qr_element:
+                img_bytes = await qr_element.screenshot()
+                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                return {
+                    "status": "ready",
+                    "qr_code": f"data:image/png;base64,{img_base64}",
+                    "message": "قم بمسح الكود لربط واتساب"
+                }
+        except Exception:
+            # إذا فشل في إيجاد Canvas، فهذا يعني غالباً أن الجهاز متصل بالفعل
+            # أو أن الصفحة في حالة تسجيل دخول
+            return {
+                "status": "connected", 
+                "message": "الجهاز مرتبط بالفعل أو قيد التحميل"
+            }
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء جلب QR للمتجر {store_id}: {e}")
+        return {"status": "error", "message": "حدث خطأ فني أثناء جلب الكود"}
 
 # دالة إرسال الرسالة الجديدة باستخدام المتصفح المفتوح
 
 @app.get("/callback")
 async def salla_callback(code: str, state: str = None):
-    """استقبال التاجر بعد تثبيت التطبيق وتخزين بياناته"""
+    """استقبال التاجر بعد تثبيت التطبيق وتخزين بياناته في PostgreSQL"""
     url = "https://accounts.salla.sa/oauth2/token"
     payload = {
         "client_id": os.getenv("SALLA_CLIENT_ID"),
@@ -1333,32 +1549,57 @@ async def salla_callback(code: str, state: str = None):
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": os.getenv("SALLA_CALLBACK_URL"),
-        "scope": "offline_access"
     }
     
     async with httpx.AsyncClient() as client:
+        # 1. تبادل الكود بالتوكنات
         resp = await client.post(url, data=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            # استخراج معرف المتجر من التوكن (عبر Salla User Info API)
-            user_info = await client.get("https://accounts.salla.sa/oauth2/user/info", 
-                                        headers={"Authorization": f"Bearer {data['access_token']}"})
-            store_id = user_info.json()["data"]["merchant"]["id"]
-            
-            # حفظ التاجر في قاعدة البيانات وتفعيل وضع "التجربة" أو "الاشتراك"
-            supabase.table("store_settings").upsert({
-                "store_id": str(store_id),
-                "salla_access_token": data["access_token"],
-                "refresh_token": data["refresh_token"],
-                "is_active": True # تفعيل البوت
-            }).execute()
-            
-            return {"status": "success", "message": "تم ربط المتجر بنجاح! يمكنك الآن العودة للوحة التحكم."}
-    
-    raise HTTPException(status_code=400, detail="فشل عملية الربط")
+        if resp.status_code != 200:
+            logger.error(f"❌ فشل تبادل التوكن: {resp.text}")
+            raise HTTPException(status_code=400, detail="فشل عملية الربط مع سلة")
 
+        token_data = resp.json()
+        access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
 
+        # 2. جلب معلومات المتجر (Store ID)
+        user_info_resp = await client.get(
+            "https://accounts.salla.sa/oauth2/user/info", 
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        
+        if user_info_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="فشل جلب بيانات المتجر")
+
+        store_info = user_info_resp.json()["data"]["merchant"]
+        store_id = str(store_info["id"])
+        store_name = store_info.get("name", "Unknown Store")
+
+        # 3. حفظ أو تحديث بيانات التاجر في PostgreSQL (UPSERT)
+        upsert_query = """
+            INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
+            VALUES (:sid, :access, :refresh, True, NOW())
+            ON CONFLICT (store_id) DO UPDATE SET 
+                salla_access_token = EXCLUDED.salla_access_token,
+                refresh_token = EXCLUDED.refresh_token,
+                is_active = True,
+                updated_at = NOW();
+        """
+        
+        execute_db_query(upsert_query, {
+            "sid": store_id,
+            "access": access_token,
+            "refresh": refresh_token
+        })
+
+        logger.info(f"🚀 متجر جديد تم ربطه بنجاح: {store_name} ({store_id})")
+        return {"status": "success", "message": f"تم ربط متجر {store_name} بنجاح!"}
 
 @app.get("/")
 def health_check():
-    return {"status": "active", "time": datetime.now()}
+    """فحص حالة السيرفر"""
+    return {
+        "status": "online", 
+        "engine": "PostgreSQL (Internal)",
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
