@@ -1,6 +1,9 @@
 import os
 import hmac
 import hashlib
+import tarfile
+import base64
+import io
 import json
 import logging
 import asyncio
@@ -64,7 +67,7 @@ app = FastAPI(title="Salla AI Integrated Bot")
 SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_session")
 
 # تكوين البيئة
-
+SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_sessions")
 
 # تحميل ملف .env فقط إذا كان موجوداً (للتطوير المحلي)
 # في ريندر، سيتم تجاهل هذا السطر واستخدام إعدادات البيئة المباشرة
@@ -133,64 +136,246 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 # تحديد مسار حفظ بيانات الجلسة (سيتم إنشاء مجلد في نفس مسار السكربت)
 
 async def get_handler_for_store(store_id: str):
-    """جلب أو إنشاء صفحة واتساب خاصة بمتجر معين (موفر للرام)"""
+    """جلب أو إنشاء صفحة واتساب مع استعادة الجلسة من قاعدة البيانات"""
     global browser_instance, pages, contexts
     
     # 1. تشغيل المحرك الرئيسي (مرة واحدة فقط)
     if not browser_instance or not browser_instance.is_connected():
-        playwright = await async_playwright().start()
-        browser_instance = await playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-        )
+        # ملاحظة: عند استخدام launch_persistent_context لاحقاً، 
+        # المتصفح والسياق يندمجان، لكننا نحتاج لمحرك Playwright أولاً
+        from playwright.async_api import async_playwright
+        playwright_manager = await async_playwright().start()
 
-    # 2. إذا كانت الصفحة مفتوحة مسبقاً لهذا المتجر، نرجعها
+    # 2. التحقق مما إذا كانت الصفحة مفتوحة ونشطة
     if store_id in pages and not pages[store_id].is_closed():
         try:
             await pages[store_id].evaluate("1+1")
             return pages[store_id]
         except:
-            logger.warning(f"صفحة المتجر {store_id} متوقفة، يتم إعادة التشغيل...")
+            logger.warning(f"🔄 صفحة المتجر {store_id} لا تستجيب، إعادة تهيئة...")
 
-    # 3. إنشاء سياق (Context) معزول لكل متجر (يحفظ الكوكيز في مجلد خاص)
+    # 3. إدارة الجلسة (الاستعادة من قاعدة البيانات)
     storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
     
-    context = await browser_instance.new_context(
-        user_data_dir=storage_path,
-        viewport={'width': 800, 'height': 600}, # توفير رام
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
-    )
-    
-    page = await context.new_page()
+    # إذا لم يكن المجلد موجوداً محلياً (مثلاً بعد ريستارت لريندر)
+    if not os.path.exists(storage_path):
+        logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من Supabase...")
+        success = await load_session_from_db(store_id)
+        if not success:
+            os.makedirs(storage_path, exist_ok=True)
+            logger.info(f"🆕 لا توجد جلسة سابقة، سيتم إنشاء مجلد جديد.")
 
-    # 4. تحسين الرام: منع الصور والوسائط
-        # ... (الأكواد السابقة لإنشاء الـ context والـ page) ...
+    # 4. تشغيل المتصفح بنظام الـ Persistent Context
+    # هذا النظام يربط المجلد بالمتصفح مباشرة لحفظ التغييرات
+    try:
+        context = await playwright_manager.chromium.launch_persistent_context(
+            user_data_dir=storage_path,
+            headless=True,
+            args=[
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ],
+            viewport={'width': 800, 'height': 600},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
+        )
+        
+        # في نظام الـ Persistent Context، يتم فتح صفحة تلقائياً، نستخدمها أو نفتح واحدة
+        page = context.pages[0] if context.pages else await context.new_page()
 
-    # 4. تحسين الرام: منع الصور والوسائط (خطوة ذكية جداً)
-    await page.route("**/*", lambda route: 
-        route.abort() if route.request.resource_type in ["image", "media", "font"] 
-        else route.continue_()
-    )
+        # 5. تحسين الأداء (منع الصور والوسائط)
+        await page.route("**/*", block_useless_resources)
 
-    # 5. التوجه إلى واتساب ويب بانتظار تحميل الواجهة الأساسية
-    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
-    
-    # 💡 6. حقن "المراقب" فوراً لضمان سماع الرسائل الواردة لهذا المتجر
-    # نمرر الـ page ومعرف المتجر store_id
-    await setup_inbound_observer(page, store_id)
+        # 6. التوجه لواتساب ويب
+        await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
+        
+        # 7. حقن المراقب
+        await setup_inbound_observer(page, store_id)
 
-    pages[store_id] = page
-    contexts[store_id] = context
-    
-    logger.info(f"✅ تم تجهيز صفحة المتجر {store_id} وحقن مراقب الرسائل.")
-    return page
+        # تخزين المراجع
+        pages[store_id] = page
+        contexts[store_id] = context
+        
+        logger.info(f"✅ صفحة المتجر {store_id} جاهزة.")
+        return page
+
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء تشغيل متصفح المتجر {store_id}: {e}")
+        return None
 
 
 # دالة منفصلة لمعالجة المنطق لتجنب التعقيد داخل ensure_browser_ready
-async def on_new_message_logic(payload):
-    logger.info(f"📩 إشعار: {payload}")
-    # أضف هنا كود الضغط على المحادثة واستخراج النص الذي كتبته سابقاً
 
+async def ensure_browser_ready(store_id: str):
+    """
+    تتأكد من جاهزية المتصفح للمتجر المحدد.
+    تقوم بتحميل الجلسة من قاعدة البيانات إذا لم تكن موجودة محلياً.
+    """
+    global playwright_manager, browser_instance, contexts, pages
+
+    try:
+        # 1. التأكد من وجود المجلد الرئيسي للجلسات
+        if not os.path.exists(SESSION_PATH):
+            os.makedirs(SESSION_PATH)
+
+        # 2. بدء محرك Playwright إذا لم يكن يعمل
+        if playwright_manager is None:
+            playwright_manager = await async_playwright().start()
+            logger.info("🚀 تم تشغيل محرك Playwright بنجاح")
+
+        # 3. تحديد مسار الجلسة الخاص بهذا المتجر
+        storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
+
+        # 4. استعادة الجلسة من قاعدة البيانات (إذا كانت مفقودة محلياً)
+        if not os.path.exists(storage_path):
+            logger.info(f"📥 الجلسة مفقودة محلياً للمتجر {store_id}، جاري محاولة التحميل من Supabase...")
+            # دالة load_session_from_db هي التي تقوم بفك الضغط في storage_path
+            await load_session_from_db(store_id)
+
+        # 5. تشغيل المتصفح بنظام Persistent Context (يربط المجلد بالمتصفح مباشرة)
+        # نتحقق مما إذا كان السياق الخاص بالمتجر موجوداً ومفتوحاً
+        if store_id not in contexts or not browser_instance.is_connected():
+            logger.info(f"🌐 فتح متصفح جديد للمتجر: {store_id}")
+            
+            context = await playwright_manager.chromium.launch_persistent_context(
+                user_data_dir=storage_path,
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                ],
+                viewport={'width': 800, 'height': 600},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            
+            contexts[store_id] = context
+            # فتح صفحة جديدة أو استخدام الصفحة الافتراضية
+            pages[store_id] = context.pages[0] if context.pages else await context.new_page()
+            
+            # إعداد حظر الصور لتوفير الرام
+            await pages[store_id].route("**/*", block_useless_resources)
+            
+            logger.info(f"✅ المتصفح جاهز الآن للمتجر {store_id}")
+        
+        return pages[store_id]
+
+    except Exception as e:
+        logger.error(f"❌ فشل في ensure_browser_ready للمتجر {store_id}: {e}")
+        return None
+
+async def save_session_to_db(store_id: str):
+    """ضغط مجلد الجلسة ورفعه إلى سوبابيس"""
+    try:
+        path = os.path.join(SESSION_PATH, f"session_{store_id}")
+        if not os.path.exists(path): return
+
+        # ضغط المجلد في الذاكرة
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            tar.add(path, arcname=os.path.basename(path))
+        
+        # تحويل لـ Base64
+        b64_session = base64.b64encode(buffer.getvalue()).decode()
+        
+        # حفظ في سوبابيس
+        supabase.table("store_sessions").upsert({
+            "store_id": store_id,
+            "session_data": b64_session,
+            "updated_at": datetime.now().isoformat()
+        }).execute()
+        
+        logger.info(f"✅ تم حفظ جلسة المتجر {store_id} في قاعدة البيانات.")
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء حفظ الجلسة: {e}")
+
+async def load_session_from_db(store_id: str):
+    """تحميل الجلسة من قاعدة البيانات وفك ضغطها"""
+    try:
+        res = supabase.table("store_sessions").select("session_data").eq("store_id", store_id).execute()
+        if not res.data: return False
+
+        b64_data = res.data[0]["session_data"]
+        compressed_data = base64.b64decode(b64_data)
+        
+        # فك الضغط في المسار المطلوب
+        buffer = io.BytesIO(compressed_data)
+        with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
+            tar.extractall(path=SESSION_PATH)
+        
+        logger.info(f"📂 تم استعادة جلسة المتجر {store_id} من قاعدة البيانات.")
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء تحميل الجلسة: {e}")
+        return False
+async def on_new_message_logic(payload):
+    """
+    دالة للبحث عن المحادثات غير المقروءة، الضغط عليها، استخراج النص، والرد.
+    """
+    # استخراج معرف المتجر من الـ payload (تأكد من مطابقة المفتاح لبياناتك)
+    store_id = payload.get("store_id", "default_store") 
+    logger.info(f"🔍 بدء فحص الرسائل الجديدة للمتجر: {store_id}")
+    
+    try:
+        # 1. جلب الصفحة المفتوحة الخاصة بهذا المتجر
+        page = await get_handler_for_store(store_id)
+        
+        # 2. محددات (Selectors) البحث عن الرسائل غير المقروءة باللغتين العربية والإنجليزية
+        unread_selector = 'span[aria-label*="غير مقروء"], span[aria-label*="unread"]'
+        
+        # الانتظار لمدة 5 ثوانٍ للتحقق من وجود أي رسالة جديدة
+        try:
+            await page.wait_for_selector(unread_selector, timeout=5000)
+        except:
+            logger.info("📭 لا توجد محادثات غير مقروءة حالياً.")
+            return
+
+        # جلب جميع المحادثات غير المقروءة
+        unread_elements = await page.locator(unread_selector).all()
+        
+        # 3. المرور على المحادثات الجديدة واحدة تلو الأخرى
+        for unread in unread_elements:
+            try:
+                # الضغط على المحادثة لفتحها
+                await unread.click()
+                await asyncio.sleep(1.5)  # انتظار بسيط لضمان تحميل المحادثة بالكامل
+                
+                # 4. استخراج اسم أو رقم العميل من رأس الصفحة (Header)
+                header_title = page.locator('header span[title]').first
+                customer_info = await header_title.get_attribute("title") if await header_title.count() > 0 else "غير معروف"
+                
+                # 5. استخراج آخر رسالة مستلمة (نبحث في الرسائل الواردة إلينا فقط 'message-in')
+                last_msg_locator = page.locator('div.message-in span.selectable-text').last
+                
+                if await last_msg_locator.count() > 0:
+                    message_text = await last_msg_locator.inner_text()
+                    logger.info(f"✅ رسالة جديدة من [{customer_info}]: {message_text}")
+                    
+                    # ==========================================
+                    # 6. تمرير النص للذكاء الاصطناعي وتجهيز الرد
+                    # ==========================================
+                    # هنا نربط مع دالة Grok التي كتبناها سابقاً
+                    # ai_reply = await process_customer_request(store_id, customer_info, message_text)
+                    
+                    # نص تجريبي مؤقت للتأكد من عمل الكود:
+                    ai_reply = f"أهلاً بك، استلمت رسالتك: '{message_text}'. جاري معالجتها..."
+                    
+                    # 7. كتابة الرد في صندوق المحادثة وإرساله
+                    chat_input = page.locator('div[contenteditable="true"][data-tab="10"], div[contenteditable="true"][title="كتب رسالة"]')
+                    await chat_input.fill(ai_reply)
+                    await page.keyboard.press("Enter")
+                    
+                    logger.info(f"📤 تم الرد على [{customer_info}] بنجاح.")
+                    await asyncio.sleep(1) # فاصل زمني لتجنب حظر واتساب
+                
+            except Exception as inner_e:
+                logger.error(f"⚠️ خطأ أثناء التعامل مع محادثة {customer_info}: {inner_e}")
+                continue
+
+    except Exception as e:
+        logger.error(f"❌ خطأ عام في دالة on_new_message_logic: {e}")
 
 async def setup_inbound_observer(page, store_id: str):
     """حقن كود مراقبة الرسائل لاستخراج البيانات بدقة لكل متجر"""
