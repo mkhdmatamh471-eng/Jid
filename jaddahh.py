@@ -1,4 +1,4 @@
-import os
+Import os
 import hmac
 import hashlib
 import json
@@ -47,7 +47,15 @@ async def read_dashboard():
 
 
 logger = logging.getLogger(__name__)
-browser_instance = None
+browser = await playwright.chromium.launch(
+    headless=True,
+    args=[
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage" # ضروري جداً لتجنب تعليق الذاكرة في Docker
+    ]
+)
+
 # قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
 contexts: Dict[str, any] = {} 
 pages: Dict[str, any] = {}
@@ -78,7 +86,7 @@ GROK_API_KEY = os.getenv("GROK_API_KEY")
 # 3. إعدادات Salla (يفضل إضافتها أيضاً)
 SALLA_CLIENT_ID = os.getenv("SALLA_CLIENT_ID")
 SALLA_CLIENT_SECRET = os.getenv("SALLA_CLIENT_SECRET")
-
+SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 engine = create_engine(
     DATABASE_URL,
     pool_size=10,          # عدد الاتصالات المفتوحة الجاهزة للاستخدام
@@ -260,7 +268,7 @@ async def block_useless_resources(route):
 # await page.route("**/*", block_useless_resources)
 
 # داخل دالة فتح الصفحة
-await page.route("**/*", block_useless_resources)
+
 
 async def salla_request(method: str, endpoint: str, store_id: str, payload: dict = None):
     """دالة موحدة لطلبات سلة مع تجديد تلقائي للتوكن"""
