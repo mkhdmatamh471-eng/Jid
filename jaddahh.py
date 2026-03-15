@@ -18,6 +18,33 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import logging
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from datetime import datetime, timedelta
+import logging
+
+# إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
+logger = logging.getLogger(__name__)
+
+app = FastAPI()
+
+# إذا كان لديك ملفات CSS أو JS خارجية (اختياري)
+# app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+async def read_dashboard():
+    # البحث عن الملف في المجلد الرئيسي للمشروع مباشرة
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.error("ملف index.html غير موجود في الجذر!")
+        return HTMLResponse(content="<h1>Error: Dashboard file not found</h1>", status_code=404)
+
+
+# تأكد من وجود المسارات التي يطلبها الـ JavaScript في ملفك
+
 
 logger = logging.getLogger(__name__)
 browser_instance = None
@@ -885,9 +912,12 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
 
 
 
+
+
 @app.get("/admin/dashboard/{store_id}")
 async def get_dashboard_data(store_id: str):
     """جلب كافة بيانات لوحة التحكم: الأرباح، الرسم البياني، المحادثات، وحالة الاتصال"""
+    # ملاحظة: تأكد من تعريف browser_instance في المستوى العام للملف
     global browser_instance
     
     try:
@@ -897,38 +927,43 @@ async def get_dashboard_data(store_id: str):
 
         # 2. جلب سجلات الاسترداد الناجحة (الأرباح)
         revenue_res = supabase.table("reminders_log") \
-            .select("recovered_amount, recovered_at") \
-            .eq("store_id", store_id) \
-            .eq("is_recovered", True) \
-            .gte("recovered_at", last_week.isoformat()) \
-            .execute()
+                .select("recovered_amount, recovered_at") \
+                .eq("store_id", store_id) \
+                .eq("is_recovered", True) \
+                .gte("recovered_at", last_week.isoformat()) \
+                .execute()
         
         revenue_data = revenue_res.data or []
-        total_revenue = sum(row['recovered_amount'] for row in revenue_data)
+        total_revenue = sum(float(row['recovered_amount']) for row in revenue_data)
 
         # 3. معالجة بيانات الرسم البياني
         days_map = {}
-        arabic_days = {"Saturday": "السبت", "Sunday": "الأحد", "Monday": "الاثنين", 
-                       "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء", "Thursday": "الخميس", "Friday": "الجمعة"}
+        arabic_days = {
+                "Saturday": "السبت", "Sunday": "الأحد", "Monday": "الاثنين", 
+                "Tuesday": "الثلاثاء", "Wednesday": "الأربعاء", "Thursday": "الخميس", "Friday": "الجمعة"
+        }
         
-        for i in range(7):
-            d = today - timedelta(days=i)
-            days_map[d.strftime('%A')] = 0
+        # ترتيب الأيام لضمان ظهورها بشكل صحيح من الأقدم للأحدث
+        for i in range(6, -1, -1):
+                d = today - timedelta(days=i)
+                days_map[d.strftime('%A')] = 0
 
         for row in revenue_data:
-            d_name = datetime.fromisoformat(row['recovered_at']).strftime('%A')
-            if d_name in days_map:
-                days_map[d_name] += row['recovered_amount']
+                # تحويل النص إلى كائن datetime للتأكد من اليوم
+                dt_obj = datetime.fromisoformat(row['recovered_at'].replace('Z', '+00:00'))
+                d_name = dt_obj.strftime('%A')
+                if d_name in days_map:
+                        days_map[d_name] += float(row['recovered_amount'])
 
-        chart_labels = [arabic_days[d] for d in reversed(list(days_map.keys()))]
-        chart_values = [v for v in reversed(list(days_map.values()))]
+        chart_labels = [arabic_days[d] for d in days_map.keys()]
+        chart_values = list(days_map.values())
 
         # 4. جلب إحصائيات سلة والردود الآلية
         conv_count = supabase.table("conversations") \
-            .select("id", count="exact").eq("role", "assistant").execute()
+                .select("id", count="exact").eq("role", "assistant").execute()
             
         abandoned_res = supabase.table("reminders_log") \
-            .select("id", count="exact").eq("store_id", store_id).execute()
+                .select("id", count="exact").eq("store_id", store_id).execute()
 
         # جلب أحدث عملية استرداد لإرسال التنبيه (Toast)
         recent_recoveries_res = supabase.table("reminders_log") \
@@ -941,25 +976,26 @@ async def get_dashboard_data(store_id: str):
 
         # 5. جلب آخر 10 محادثات
         recent_chats = supabase.table("conversations") \
-            .select("*, customers(phone_number)") \
-            .order("created_at", desc=True).limit(10).execute()
+                .select("*, customers(phone_number)") \
+                .order("created_at", desc=True).limit(10).execute()
 
-        # 6. فحص حالة المتصفح
+        # 6. فحص حالة المتصفح (Playwright)
         is_browser_alive = False
         try:
-            if browser_instance and browser_instance.is_connected():
-                is_browser_alive = True
+                # تأكد أن المتصفح يعمل ولم يتم إغلاقه بواسطة ريندر بسبب استهلاك الرام
+                if 'browser_instance' in globals() and browser_instance and browser_instance.is_connected():
+                        is_browser_alive = True
         except:
-            is_browser_alive = False
+                is_browser_alive = False
 
-        # 7. الرد النهائي الموحد بإزاحة 8 مسافات للأجزاء المضافة
+        # 7. الرد النهائي الموحد بإزاحة 8 مسافات
         return {
                 "summary": {
                         "total_revenue_saved": total_revenue
                 },
                 "recent_recoveries": [
-                        {"id": r['id'], "amount": r['recovered_amount'], "phone": r['customer_phone']} 
-                        for r in recent_recoveries_res.data
+                        {"id": r['id'], "amount": float(r['recovered_amount']), "phone": r['customer_phone']} 
+                        for r in (recent_recoveries_res.data or [])
                 ],
                 "bot_usage": conv_count.count if conv_count.count else 0,
                 "salla_stats": {
@@ -975,7 +1011,7 @@ async def get_dashboard_data(store_id: str):
 
     except Exception as e:
         logger.error(f"Dashboard Data Error: {str(e)}")
-        return {"error": "حدث خطأ أثناء تحديث البيانات"}
+        return {"error": f"حدث خطأ أثناء تحديث البيانات: {str(e)}"}
 
 @app.get("/admin/advanced-stats/{store_id}")
 async def get_advanced_analytics(store_id: str):
