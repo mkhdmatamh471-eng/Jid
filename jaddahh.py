@@ -1,4 +1,4 @@
-import os
+Import os
 import hmac
 import hashlib
 import json
@@ -47,19 +47,12 @@ async def read_dashboard():
 
 
 logger = logging.getLogger(__name__)
-browser = await playwright.chromium.launch(
-    headless=True,
-    args=[
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage" # ضروري جداً لتجنب تعليق الذاكرة في Docker
-    ]
-)
+
 
 # قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
 contexts: Dict[str, any] = {} 
 pages: Dict[str, any] = {}
-
+browser_instance = None
 # 1. الإعدادات والتحميل
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
