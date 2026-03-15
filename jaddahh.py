@@ -590,18 +590,32 @@ async def cron_scheduler():
     """مهمة تعمل في الخلفية كل ساعة لفحص السلال المتروكة"""
     while True:
         logger.info("Starting abandoned carts check cycle...")
-        # جلب جميع المتاجر النشطة
-        active_stores = supabase.table("store_settings").select("store_id").eq("is_active", True).execute()
         
-        for store in active_stores.data:
-            try:
-                await check_abandoned_carts_and_remind(store["store_id"])
-            except Exception as e:
-                logger.error(f"Error in cron for store {store['store_id']}: {e}")
-        
-        # الانتظار لمدة ساعة (3600 ثانية) قبل الفحص القادم
-        await asyncio.sleep(3600)
+        try:
+            # الاتصال بقاعدة البيانات باستخدام الرابط الموحد
+            conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # جلب المتاجر النشطة
+            cur.execute("SELECT store_id FROM store_settings WHERE is_active = True")
+            active_stores = cur.fetchall()
+            
+            # إغلاق الاتصال بعد جلب البيانات لتوفير موارد السيرفر
+            cur.close()
+            conn.close()
 
+            # الدوران على المتاجر
+            for store in active_stores:
+                try:
+                    await check_abandoned_carts_and_remind(store["store_id"])
+                except Exception as e:
+                    logger.error(f"Error in cron for store {store['store_id']}: {e}")
+        
+        except Exception as db_error:
+            logger.error(f"Database connection error in cron: {db_error}")
+
+        # الانتظار لمدة ساعة
+        await asyncio.sleep(3600)
 # تحديث دالة بدء التطبيق لتشغيل المجدل
 @app.on_event("startup")
 async def startup_event():
