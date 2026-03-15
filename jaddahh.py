@@ -37,16 +37,6 @@ app = FastAPI()
 # إذا كان لديك ملفات CSS أو JS خارجية (اختياري)
 # app.mount("/static", StaticFiles(directory="static"), name="static")
 
-@app.get("/", response_class=HTMLResponse)
-async def read_dashboard():
-    # البحث عن الملف في المجلد الرئيسي للمشروع مباشرة
-    try:
-        with open("index.html", "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        logger.error("ملف index.html غير موجود في الجذر!")
-        return HTMLResponse(content="<h1>Error: Dashboard file not found</h1>", status_code=404)
-
 
 # تأكد من وجود المسارات التي يطلبها الـ JavaScript في ملفك
 
