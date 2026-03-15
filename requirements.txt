@@ -11,6 +11,7 @@ supabase
 # Automation & Scraping
 playwright
 httpx
+jinja2
 
 # AI & API Integration
 python-dotenv
