@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 import logging
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timedelta
 import logging
@@ -1181,8 +1180,12 @@ async def groq_generate_reply(history: list, context: str, system_prompt: str) -
 
 
 
-@app.post("/webhook/salla")
+@app.api_route("/webhook/salla", methods=["GET", "POST"]) # تعديل هنا للسماح بـ GET و POST
 async def handle_salla_event(request: Request, background_tasks: BackgroundTasks):
+    # 1. حل مشكلة الـ GET: إذا كان الطلب GET رُد بنجاح فوراً
+    if request.method == "GET":
+        return {"status": "ok", "message": "Webhook is active"}
+
     signature = request.headers.get("X-Salla-Signature")
     payload = await request.body()
     secret = os.getenv("SALLA_WEBHOOK_SECRET")
@@ -1292,7 +1295,6 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
     return {"status": "ok"}
 
 
-from fastapi.responses import HTMLResponse
 
 @app.get("/admin/{store_id}", response_class=HTMLResponse)
 async def admin_panel(store_id: str):
@@ -1595,11 +1597,15 @@ async def salla_callback(code: str, state: str = None):
         logger.info(f"🚀 متجر جديد تم ربطه بنجاح: {store_name} ({store_id})")
         return {"status": "success", "message": f"تم ربط متجر {store_name} بنجاح!"}
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
+async def read_index():
+    with open("index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+# 2. هذا المسار سيبقى لفحص الحالة (يمكنك الوصول إليه عبر /health)
+@app.get("/health")
 def health_check():
-    """فحص حالة السيرفر"""
     return {
         "status": "online", 
         "engine": "PostgreSQL (Internal)",
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
