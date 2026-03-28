@@ -128,7 +128,7 @@ let recoveryChartInstance = null;
 
         async function loadDashboard() {
     try {
-        const response = await fetch(`/admin/dashboard/${storeId}`);
+        const response = await fetch(`/api/dashboard/${storeId}`);
         const data = await response.json();
 
         // 1. تحديث الأرقام العلوية مع تأثير بسيط (اختياري)
