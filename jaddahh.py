@@ -28,6 +28,9 @@ import logging
 from fastapi.responses import HTMLResponse
 import psycopg2  
 from psycopg2.extras import RealDictCursor
+from fastapi.templating import Jinja2Templates
+
+templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
 logger = logging.getLogger(__name__)
 
@@ -1326,8 +1329,8 @@ async def admin_panel(store_id: str):
         return HTMLResponse(content="<h1>خطأ: ملف index.html غير موجود في السيرفر</h1>", status_code=404)
 
 
-@app.get("/admin/dashboard/{store_id}")
-async def get_dashboard_data(store_id: str):
+@app.get("/api/dashboard-stats/{store_id}")
+async def get_dashboard_api_data(store_id: str):
     """جلب كافة بيانات لوحة التحكم باستخدام PostgreSQL المباشر"""
     global browser_instance
     
@@ -1438,6 +1441,9 @@ async def get_dashboard_data(store_id: str):
         logger.error(f"Dashboard Data Error: {str(e)}")
         return {"error": f"حدث خطأ أثناء تحديث البيانات: {str(e)}"}
 
+@app.get("/admin/dashboard/{store_id}", response_class=HTMLResponse)
+async def serve_dashboard(request: Request, store_id: str):
+    return templates.TemplateResponse("index.html", {"request": request, "store_id": store_id})
 
 @app.get("/admin/advanced-stats/{store_id}")
 async def get_advanced_analytics(store_id: str):
