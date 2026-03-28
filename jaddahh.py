@@ -1596,7 +1596,7 @@ async def salla_callback(code: str, state: str = None):
 
         logger.info(f"🚀 متجر جديد تم ربطه بنجاح: {store_name} ({store_id})")
         return {"status": "success", "message": f"تم ربط متجر {store_name} بنجاح!"}
-
+        
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     with open("index.html", "r", encoding="utf-8") as f:
@@ -1609,3 +1609,4 @@ def health_check():
         "status": "online", 
         "engine": "PostgreSQL (Internal)",
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
