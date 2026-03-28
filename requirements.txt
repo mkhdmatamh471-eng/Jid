@@ -2,21 +2,14 @@
 fastapi
 uvicorn
 python-multipart
-
-# Database & ORM
 sqlalchemy
 psycopg2-binary
 supabase
 
-# Automation & Scraping
 playwright
 httpx
 jinja2
-
-# AI & API Integration
 python-dotenv
 pydantic
-
-# Security & Utilities
 pycryptodome
 # ملاحظة: hmac, hashlib, json, logging, asyncio هي مكتبات مدمجة في بايثون ولا تحتاج تثبيت
