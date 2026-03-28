@@ -89,18 +89,32 @@ engine = create_engine(
 # إنشاء مصنع الجلسات
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def execute_db_query(query: str, params: dict = None):
+def execute_db_query(query: str, params: dict = None, fetch: str = None):
     """
-    دالة موحدة لتنفيذ استعلامات SQL بشكل آمن وسريع
+    دالة موحدة ومحدثة:
+    - تنفيذ العمليات (INSERT, UPDATE)
+    - جلب البيانات (SELECT) باستخدام fetch='one' أو fetch='all'
     """
     try:
         with engine.connect() as connection:
+            # تنفيذ الاستعلام
             result = connection.execute(text(query), params or {})
-            connection.commit() # ضروري لحفظ التغييرات (Insert/Update)
+            
+            # إذا كان الطلب هو جلب بيانات (SELECT)
+            if fetch == "one":
+                return result.fetchone()
+            if fetch == "all":
+                return result.fetchall()
+            
+            # إذا كان الطلب تحديث أو إدخال (INSERT, UPDATE)
+            connection.commit() 
             return result
     except Exception as e:
         logger.error(f"Database Query Error: {e}")
-        raise e        
+        # نرفع الخطأ لكي نعرف مكانه في السجلات (Logs)
+        raise e
+
+# طابور الرسائل يبقى كما هو
 message_queue = asyncio.Queue()
 
 async def message_worker():
