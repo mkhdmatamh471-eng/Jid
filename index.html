@@ -121,124 +121,126 @@
     </div>
 
     <script>
-        const storeId = "STORE_001";
+    // 1. استلام الـ ID من السيرفر بشكل ديناميكي (هذا هو السر!)
+    const storeId = "{{ store_id }}"; 
 
-        // تعريف متغير خارج الدالة للاحتفاظ بمرجع الرسم البياني
-let recoveryChartInstance = null;
+    let recoveryChartInstance = null;
 
-        async function loadDashboard() {
-    try {
-        const response = await fetch(`/api/dashboard/${storeId}`);
-        const data = await response.json();
-
-        // 1. تحديث الأرقام العلوية مع تأثير بسيط (اختياري)
-        document.getElementById('botUsage').innerText = Number(data.bot_usage).toLocaleString() || 0;
-        document.getElementById('abandonedCount').innerText = data.salla_stats.abandoned_carts_count || 0;
-        
-        // تحديث الربح المسترد بإضافة رمز العملة
-        const revenueElem = document.getElementById('recoveredRevenue');
-        revenueElem.innerText = `${Number(data.summary.total_revenue_saved).toLocaleString()} ر.س`;
-
-        // 2. تحديث جدول المحادثات (تأكد من وجود هذا الجزء)
-        const chatTable = document.getElementById('recentChats');
-        if (data.recent_activity) {
-            chatTable.innerHTML = data.recent_activity.map(chat => `
-                <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
-                    <td class="p-4 font-bold text-xs">${chat.customers.phone_number}</td>
-                    <td class="p-4 text-xs text-gray-600 truncate max-w-[150px]">${chat.content}</td>
-                    <td class="p-4 text-center">
-                        <span class="px-2 py-1 rounded-full text-[9px] font-bold ${chat.role === 'assistant' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}">
-                            ${chat.role === 'assistant' ? '🤖 آلي' : '👤 عميل'}
-                        </span>
-                    </td>
-                </tr>
-            `).join('');
+    async function loadDashboard() {
+        // التحقق من وجود معرف المتجر قبل البدء
+        if (!storeId || storeId === "None" || storeId === "") {
+            console.error("Store ID is missing");
+            return;
         }
 
-        // 3. إدارة المخطط البياني (Chart.js)
-        const ctx = document.getElementById('recoveryChart').getContext('2d');
-
-        // الحماية من تداخل الرسوم: إذا كان هناك رسم سابق، قم بحذفه
-        if (recoveryChartInstance) {
-            recoveryChartInstance.destroy();
-        }
-
-        // إنشاء الرسم البياني الجديد
-        recoveryChartInstance = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: data.charts_data.labels, 
-                datasets: [{
-                    label: 'أرباح مستردة (ر.س)',
-                    data: data.charts_data.values, 
-                    borderColor: '#10b981',
-                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 3,
-                    borderWidth: 2
-                }]
-            },
-            options: { 
-                responsive: true, 
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false } // إخفاء الليبل العلوي لجمالية التصميم
-                },
-                scales: {
-                    y: { beginAtZero: true, grid: { display: false } },
-                    x: { grid: { display: false } }
-                }
-            }
-        });
-
-    } catch (error) { 
-        console.error("Dashboard Sync Error:", error); 
-    }
-}
-
-
-        async function refreshQR() {
-            const qrImage = document.getElementById('qr-image');
-            const qrBox = document.getElementById('qr-box');
-            qrBox.style.opacity = "0.3";
+        try {
+            const response = await fetch(`/api/dashboard/${storeId}`);
+            if (!response.ok) throw new Error("Network response was not ok");
             
-            try {
-                const response = await fetch(`/admin/get-qr/${storeId}`);
-                const data = await response.json();
-                if (data.qr_code) {
-                    qrImage.src = data.qr_code;
-                } else {
-                    alert("فشل جلب الكود، قد تكون الجلسة نشطة بالفعل.");
-                }
-            } catch (err) { alert("حدث خطأ أثناء الاتصال بالسيرفر"); }
-            finally { qrBox.style.opacity = "1"; }
-        }
+            const data = await response.json();
 
-        async function saveSettings() {
-            const btn = document.getElementById('saveBtn');
-            const payload = {
-                admin_phone: document.getElementById('adminPhone').value,
-                system_prompt: document.getElementById('systemPrompt').value
-            };
-            btn.innerText = "جاري الحفظ...";
-            btn.disabled = true;
-            try {
-                const resp = await fetch(`/admin/update-config/${storeId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (resp.ok) alert("✅ تم الحفظ!");
-            } catch (err) { alert("❌ خطأ!"); }
-            finally { 
-                btn.innerText = "حفظ الإعدادات"; 
-                btn.disabled = false; 
+            // 2. تحديث الأرقام مع إضافة (Optional Chaining) لمنع الانهيار إذا نقصت بيانات
+            document.getElementById('botUsage').innerText = Number(data.bot_usage || 0).toLocaleString();
+            document.getElementById('abandonedCount').innerText = data.salla_stats?.abandoned_carts_count || 0;
+            
+            const revenueElem = document.getElementById('recoveredRevenue');
+            const totalSaved = data.summary?.total_revenue_saved || 0;
+            revenueElem.innerText = `${Number(totalSaved).toLocaleString()} ر.س`;
+
+            // 3. تحديث الجدول
+            const chatTable = document.getElementById('recentChats');
+            if (data.recent_activity && data.recent_activity.length > 0) {
+                chatTable.innerHTML = data.recent_activity.map(chat => `
+                    <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
+                        <td class="p-4 font-bold text-xs">${chat.customers?.phone_number || 'عميل'}</td>
+                        <td class="p-4 text-xs text-gray-600 truncate max-w-[150px]">${chat.content}</td>
+                        <td class="p-4 text-center">
+                            <span class="px-2 py-1 rounded-full text-[9px] font-bold ${chat.role === 'assistant' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}">
+                                ${chat.role === 'assistant' ? '🤖 آلي' : '👤 عميل'}
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
+            } else {
+                chatTable.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400 text-xs">لا توجد محادثات نشطة حالياً</td></tr>';
             }
-        }
 
-        loadDashboard();
-        setInterval(loadDashboard, 60000);
-    </script>
+            // 4. إدارة المخطط البياني
+            const ctx = document.getElementById('recoveryChart').getContext('2d');
+            if (recoveryChartInstance) {
+                recoveryChartInstance.destroy();
+            }
+
+            recoveryChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.charts_data?.labels || [], 
+                    datasets: [{
+                        label: 'أرباح مستردة (ر.س)',
+                        data: data.charts_data?.values || [], 
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 3,
+                        borderWidth: 2
+                    }]
+                },
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, grid: { display: false } },
+                        x: { grid: { display: false } }
+                    }
+                }
+            });
+
+        } catch (error) { 
+            console.error("Dashboard Sync Error:", error); 
+        }
+    }
+
+    // دوال الأزرار
+    async function refreshQR() {
+        const qrImage = document.getElementById('qr-image');
+        const qrBox = document.getElementById('qr-box');
+        qrBox.style.opacity = "0.3";
+        try {
+            const response = await fetch(`/admin/get-qr/${storeId}`);
+            const data = await response.json();
+            if (data.qr_code) qrImage.src = data.qr_code;
+        } catch (err) { console.error("QR Error"); }
+        finally { qrBox.style.opacity = "1"; }
+    }
+
+    async function saveSettings() {
+        const btn = document.getElementById('saveBtn');
+        const payload = {
+            admin_phone: document.getElementById('adminPhone').value,
+            system_prompt: document.getElementById('systemPrompt').value
+        };
+        btn.innerText = "جاري الحفظ...";
+        btn.disabled = true;
+        try {
+            await fetch(`/admin/update-config/${storeId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            Toastify({ text: "✅ تم حفظ الإعدادات بنجاح", backgroundColor: "#10b981" }).showToast();
+        } catch (err) { 
+            Toastify({ text: "❌ فشل الحفظ", backgroundColor: "#ef4444" }).showToast();
+        } finally { 
+            btn.innerText = "حفظ الإعدادات"; 
+            btn.disabled = false; 
+        }
+    }
+
+    // التشغيل الأول والتحديث الدوري
+    loadDashboard();
+    setInterval(loadDashboard, 60000);
+</script>
 </body>
 </html>
