@@ -1443,8 +1443,15 @@ async def get_dashboard_api_data(store_id: str):
 
 @app.get("/admin/dashboard/{store_id}", response_class=HTMLResponse)
 async def serve_dashboard(request: Request, store_id: str):
-    return templates.TemplateResponse("index.html", {"request": request, "store_id": store_id})
-
+    try:
+        # تأكد أن ملف index.html موجود في نفس مسار هذا الملف
+        return templates.TemplateResponse("index.html", {
+            "request": request, 
+            "store_id": store_id
+        })
+    except Exception as e:
+        logger.error(f"❌ خطأ في تحميل القالب: {e}")
+        return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500
 @app.get("/admin/advanced-stats/{store_id}")
 async def get_advanced_analytics(store_id: str):
     try:
