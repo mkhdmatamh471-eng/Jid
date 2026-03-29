@@ -31,7 +31,7 @@ from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
-
+from fastapi.responses import RedirectResponse 
 
 templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
@@ -1570,43 +1570,53 @@ async def get_whatsapp_qr(store_id: str):
 
 # دالة إرسال الرسالة الجديدة باستخدام المتصفح المفتوح
 
+# تأكد من استيراد هذا
+
 @app.get("/callback")
 async def salla_callback(code: str, state: str = None):
-    """استقبال التاجر بعد تثبيت التطبيق وتخزين بياناته في PostgreSQL"""
+    """استقبال التاجر وتوجيهه للوحة التحكم"""
     url = "https://accounts.salla.sa/oauth2/token"
+    
+    # ⚠️ ملاحظة هامة: يجب أن يطابق هذا الرابط ما وضعته في لوحة سلة بالحرف
+    redirect_uri = os.getenv("SALLA_CALLBACK_URL") 
+    
     payload = {
         "client_id": os.getenv("SALLA_CLIENT_ID"),
         "client_secret": os.getenv("SALLA_CLIENT_SECRET"),
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": os.getenv("SALLA_CALLBACK_URL"),
+        "scope": "offline_access",
+        "redirect_uri": redirect_uri,
     }
     
     async with httpx.AsyncClient() as client:
-        # 1. تبادل الكود بالتوكنات
+        # 1. تبادل الكود بالتوكنات (إرسال كـ data وليس json)
         resp = await client.post(url, data=payload)
+        
         if resp.status_code != 200:
             logger.error(f"❌ فشل تبادل التوكن: {resp.text}")
-            raise HTTPException(status_code=400, detail="فشل عملية الربط مع سلة")
+            # عرض الخطأ القادم من سلة مباشرة في المتصفح للتصحيح
+            return HTMLResponse(content=f"<h1>فشل الربط</h1><p>{resp.text}</p>", status_code=400)
 
         token_data = resp.json()
         access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")
 
-        # 2. جلب معلومات المتجر (Store ID)
+        # 2. جلب معلومات المتجر للحصول على الـ Store ID الحقيقي
         user_info_resp = await client.get(
             "https://accounts.salla.sa/oauth2/user/info", 
             headers={"Authorization": f"Bearer {access_token}"}
         )
         
         if user_info_resp.status_code != 200:
-            raise HTTPException(status_code=400, detail="فشل جلب بيانات المتجر")
+            return HTMLResponse(content="<h1>فشل جلب بيانات المتجر</h1>", status_code=400)
 
-        store_info = user_info_resp.json()["data"]["merchant"]
-        store_id = str(store_info["id"])
-        store_name = store_info.get("name", "Unknown Store")
+        user_data = user_info_resp.json()
+        # سلة تعيد المعرف في هذا المسار عادةً
+        store_id = str(user_data["data"]["merchant"]["id"])
+        store_name = user_data["data"]["merchant"].get("name", "متجرك")
 
-        # 3. حفظ أو تحديث بيانات التاجر في PostgreSQL (UPSERT)
+        # 3. حفظ البيانات في PostgreSQL
         upsert_query = """
             INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
             VALUES (:sid, :access, :refresh, True, NOW())
@@ -1617,14 +1627,20 @@ async def salla_callback(code: str, state: str = None):
                 updated_at = NOW();
         """
         
-        execute_db_query(upsert_query, {
-            "sid": store_id,
-            "access": access_token,
-            "refresh": refresh_token
-        })
-
-        logger.info(f"🚀 متجر جديد تم ربطه بنجاح: {store_name} ({store_id})")
-        return {"status": "success", "message": f"تم ربط متجر {store_name} بنجاح!"}
+        try:
+            execute_db_query(upsert_query, {
+                "sid": store_id,
+                "access": access_token,
+                "refresh": refresh_token
+            })
+            logger.info(f"🚀 تم الربط بنجاح: {store_name}")
+            
+            # 4. التعديل الأهم: التوجيه التلقائي للوحة التحكم بدلاً من رسالة نصية
+            return RedirectResponse(url=f"/admin/dashboard/{store_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في قاعدة البيانات: {e}")
+            return HTMLResponse(content=f"<h1>خطأ في حفظ البيانات</h1><p>{str(e)}</p>", status_code=500)
         
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
