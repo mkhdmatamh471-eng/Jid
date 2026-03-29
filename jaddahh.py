@@ -1332,8 +1332,10 @@ async def admin_panel(store_id: str):
         return HTMLResponse(content="<h1>خطأ: ملف index.html غير موجود في السيرفر</h1>", status_code=404)
 
 
-@app.get("/api/dashboard-stats/{store_id}")
+# تغيير من dashboard-stats إلى dashboard
+@app.get("/api/dashboard/{store_id}") 
 async def get_dashboard_api_data(store_id: str):
+
     """جلب كافة بيانات لوحة التحكم باستخدام PostgreSQL المباشر"""
     global browser_instance
     
