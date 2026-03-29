@@ -1449,18 +1449,15 @@ async def get_dashboard_api_data(store_id: str):
 @app.get("/admin/dashboard/{store_id}", response_class=HTMLResponse)
 async def serve_dashboard(request: Request, store_id: str):
     try:
-        # تحويل store_id لسلسلة نصية صريحة لضمان عدم تمريره ككائن
-        s_id = str(store_id)
-        
+        # الحل: تمرير request مباشرة كأول وسيط للدالة
         return templates.TemplateResponse(
+            request=request,  # تم نقله هنا ليكون وسيطاً صريحاً
             name="index.html",
             context={
-                "request": request, 
-                "store_id": s_id
+                "store_id": str(store_id) # اترك القيم الأخرى هنا
             }
         )
     except Exception as e:
-        # تحويل الخطأ لنص str(e) مهم جداً هنا
         error_msg = f"خطأ في معالجة القالب: {str(e)}"
         logger.error(f"❌ {error_msg}")
         return HTMLResponse(content=f"<h1>{error_msg}</h1>", status_code=500)
