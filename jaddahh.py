@@ -1447,14 +1447,11 @@ async def get_dashboard_api_data(store_id: str):
 @app.get("/admin/dashboard/{store_id}", response_class=HTMLResponse)
 async def serve_dashboard(request: Request, store_id: str):
     try:
-        # تأكد أن ملف index.html موجود في نفس مسار هذا الملف
-        return templates.TemplateResponse("index.html", {
-            "request": request, 
-            "store_id": store_id
-        })
+        # تأكد من استخدام context واضح وبسيط
+        context = {"request": request, "store_id": store_id}
+        return templates.TemplateResponse("index.html", context)
     except Exception as e:
-        logger.error(f"❌ خطأ في تحميل القالب: {e}")
-        # أضفنا القوس المفقود هنا في نهاية السطر التالي )
+        logger.error(f"Template Error: {e}")
         return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500)
 
 @app.get("/admin/advanced-stats/{store_id}")
