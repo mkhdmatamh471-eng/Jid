@@ -55,8 +55,11 @@
 <div class="max-w-6xl mx-auto mb-10">
     <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
         <h3 class="text-xl font-bold mb-6">مخطط الاسترداد الأسبوعي 📈</h3>
-        <canvas id="recoveryChart" class="w-full h-[250px]"></canvas>
+        <div style="position: relative; height:300px; width:100%">
+            <canvas id="recoveryChart"></canvas>
+        </div>
     </div>
+</div>
 </div>
 
         <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -165,7 +168,7 @@
                 chatTable.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400 text-xs">لا توجد محادثات نشطة حالياً</td></tr>';
             }
 
-            // 4. إدارة المخطط البياني
+            // 4. إدارة المخطط البياني (نسخة معدلة لضبط الإزاحة والحجم)
             const ctx = document.getElementById('recoveryChart').getContext('2d');
             if (recoveryChartInstance) {
                 recoveryChartInstance.destroy();
@@ -182,17 +185,51 @@
                         backgroundColor: 'rgba(16, 185, 129, 0.1)',
                         fill: true,
                         tension: 0.4,
-                        pointRadius: 3,
-                        borderWidth: 2
+                        pointRadius: 4, // تكبير النقاط قليلاً للوضوح
+                        borderWidth: 3  // زيادة سمك الخط
                     }]
                 },
                 options: { 
                     responsive: true, 
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    // إضافة إزاحة (Padding) حول الرسم البياني لمنع التصاق الخط بالحواف
+                    layout: {
+                        padding: {
+                            left: 10,
+                            right: 20,
+                            top: 20,
+                            bottom: 10
+                        }
+                    },
+                    plugins: { 
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1f2937',
+                            titleFont: { family: 'Cairo' },
+                            bodyFont: { family: 'Cairo' },
+                            padding: 10,
+                            cornerRadius: 8,
+                            displayColors: false
+                        }
+                    },
                     scales: {
-                        y: { beginAtZero: true, grid: { display: false } },
-                        x: { grid: { display: false } }
+                        y: { 
+                            beginAtZero: true, 
+                            grid: { display: true, color: '#f3f4f6' }, // شبكة خفيفة جداً للارتفاع
+                            ticks: {
+                                font: { family: 'Cairo', size: 10 },
+                                color: '#9ca3af',
+                                padding: 10 // إزاحة الأرقام عن المحور
+                            }
+                        },
+                        x: { 
+                            grid: { display: false },
+                            ticks: {
+                                font: { family: 'Cairo', size: 10 },
+                                color: '#9ca3af',
+                                padding: 5
+                            }
+                        }
                     }
                 }
             });
