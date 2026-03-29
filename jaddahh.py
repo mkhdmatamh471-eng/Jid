@@ -28,7 +28,10 @@ import logging
 from fastapi.responses import HTMLResponse
 import psycopg2  
 from psycopg2.extras import RealDictCursor
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
+
 
 templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
@@ -1451,7 +1454,9 @@ async def serve_dashboard(request: Request, store_id: str):
         })
     except Exception as e:
         logger.error(f"❌ خطأ في تحميل القالب: {e}")
-        return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500
+        # أضفنا القوس المفقود هنا في نهاية السطر التالي )
+        return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500)
+
 @app.get("/admin/advanced-stats/{store_id}")
 async def get_advanced_analytics(store_id: str):
     try:
