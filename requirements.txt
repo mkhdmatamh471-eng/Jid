@@ -8,6 +8,7 @@ supabase
 
 playwright
 httpx
+aiofiles
 jinja2
 python-dotenv
 pydantic
