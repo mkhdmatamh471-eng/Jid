@@ -1534,27 +1534,25 @@ async def update_config(store_id: str, settings: dict):
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
-    """جلب رمز QR الخاص بواتساب للمتجر مع التحقق من حالته في PostgreSQL"""
     try:
-        # 1. التحقق من وجود المتجر وصلاحيته في قاعدة البيانات
+        # 1. التحقق من المتجر
         query = "SELECT is_active FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
-        
-        if not row:
-            return {"status": "error", "message": "المتجر غير مسجل في النظام"}
+        if not row: return {"status": "error", "message": "المتجر غير مسجل"}
 
-        # 2. الحصول على صفحة المتصفح (Handler) المخصصة لهذا التاجر
-        # ملاحظة: get_handler_for_store يجب أن تدير الـ Sessions بناءً على store_id
+        # 2. الحصول على الصفحة
         page = await get_handler_for_store(store_id)
-        
-        if not page:
-            return {"status": "error", "message": "فشل فتح جلسة المتصفح للمتجر"}
+        if not page: return {"status": "error", "message": "فشل فتح المتصفح"}
 
-        # 3. محاولة التقاط رمز الـ QR
+        # تحديث الصفحة لضمان توليد كود جديد
+        await page.reload()
+        
         try:
-            # ننتظر ظهور الـ Canvas الذي يحتوي على الـ QR
-            await page.wait_for_selector("canvas", timeout=10000)
-            qr_element = await page.query_selector("canvas")
+            # الانتظار حتى يظهر الـ QR (سواء كان canvas أو img)
+            await page.wait_for_selector("canvas, img[alt='Scan me!']", timeout=15000)
+            
+            # محاولة التقاط الـ QR من الـ canvas أولاً ثم الصور
+            qr_element = await page.query_selector("canvas") or await page.query_selector("img[alt='Scan me!']")
             
             if qr_element:
                 img_bytes = await qr_element.screenshot()
@@ -1562,21 +1560,47 @@ async def get_whatsapp_qr(store_id: str):
                 return {
                     "status": "ready",
                     "qr_code": f"data:image/png;base64,{img_base64}",
-                    "message": "قم بمسح الكود لربط واتساب"
+                    "message": "قم بمسح الكود الآن"
                 }
         except Exception:
-            # إذا فشل في إيجاد Canvas، فهذا يعني غالباً أن الجهاز متصل بالفعل
-            # أو أن الصفحة في حالة تسجيل دخول
-            return {
-                "status": "connected", 
-                "message": "الجهاز مرتبط بالفعل أو قيد التحميل"
-            }
+            # فحص إذا كان المستخدم مسجل دخول بالفعل
+            if await page.query_selector("div[data-testid='chat-list']"):
+                return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
+            return {"status": "error", "message": "انتهت مهلة توليد الكود، حاول مجدداً"}
 
     except Exception as e:
-        logger.error(f"❌ خطأ أثناء جلب QR للمتجر {store_id}: {e}")
-        return {"status": "error", "message": "حدث خطأ فني أثناء جلب الكود"}
+        logger.error(f"❌ QR Error: {e}")
+        return {"status": "error", "message": str(e)}
 
-# دالة إرسال الرسالة الجديدة باستخدام المتصفح المفتوح
+async def send_whatsapp_message(store_id: str, phone: str, message: str):
+    """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر"""
+    try:
+        page = await get_handler_for_store(store_id)
+        if not page:
+            logger.error("❌ المتصفح غير جاهز للإرسال")
+            return False
+
+        # تنظيف رقم الهاتف (إضافة مفتاح الدولة إذا نقص)
+        clean_phone = phone.replace("+", "").replace(" ", "")
+        url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={urllib.parse.quote(message)}"
+        
+        await page.goto(url)
+        
+        # الانتظار حتى يظهر زر الإرسال (أيقونة الإرسال في واتساب ويب)
+        send_button_selector = "span[data-testid='send'], button[data-testid='compose-btn-send']"
+        await page.wait_for_selector(send_button_selector, timeout=20000)
+        
+        # الضغط على زر الإرسال
+        await page.click(send_button_selector)
+        
+        # انتظار بسيط للتأكد من خروج الرسالة قبل إغلاق أو تحويل الصفحة
+        await asyncio.sleep(2)
+        logger.info(f"✅ تم إرسال الرسالة بنجاح إلى {phone}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ فشل إرسال الرسالة إلى {phone}: {e}")
+        return False
 
 # تأكد من استيراد هذا
 
