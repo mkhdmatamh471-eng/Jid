@@ -118,9 +118,6 @@ def execute_db_query(query: str, params: dict = None, fetch: str = None):
         # رفع الخطأ ضروري لكي تظهر تفاصيله في سجلات Render
         raise e
         
-
-async with httpx.AsyncClient(timeout=40.0) as client:
-    response = await client.post("https://accounts.salla.sa/oauth2/token", data=payload)
 async def message_worker():
     while True:
         # الآن الـ Queue يستقبل 3 قيم
