@@ -1550,7 +1550,7 @@ async def get_whatsapp_qr(store_id: str):
             
             # --- السر هنا: انتظر قليلاً لضمان اكتمال رسم الـ Canvas ---
             # بدون هذه الثانية، قد تلتقط صورة بيضاء لأن المتصفح لم ينتهِ من الرسم
-            await asyncio.sleep(2) 
+            await asyncio.sleep(20) 
             
             # 5. محاولة التقاط الـ QR
             qr_element = await page.query_selector("canvas") or await page.query_selector("img[alt='Scan me!']")
