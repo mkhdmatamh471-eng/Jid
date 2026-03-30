@@ -97,32 +97,30 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def execute_db_query(query: str, params: dict = None, fetch: str = None):
     """
-    دالة موحدة ومحدثة:
-    - تنفيذ العمليات (INSERT, UPDATE)
-    - جلب البيانات (SELECT) باستخدام fetch='one' أو fetch='all'
+    نسخة احترافية تدعم التراجع التلقائي في حال الخطأ (Rollback)
+    وتوافق مع SQLAlchemy 2.0
     """
     try:
         with engine.connect() as connection:
-            # تنفيذ الاستعلام
-            result = connection.execute(text(query), params or {})
-            
-            # إذا كان الطلب هو جلب بيانات (SELECT)
-            if fetch == "one":
-                return result.fetchone()
-            if fetch == "all":
-                return result.fetchall()
-            
-            # إذا كان الطلب تحديث أو إدخال (INSERT, UPDATE)
-            connection.commit() 
-            return result
+            # استخدام begin لضمان تنفيذ العملية ككتلة واحدة (Transaction)
+            with connection.begin():
+                result = connection.execute(text(query), params or {})
+                
+                if fetch == "one":
+                    return result.fetchone()
+                if fetch == "all":
+                    return result.fetchall()
+                
+                # ملاحظة: connection.begin() تقوم بعمل commit تلقائياً عند الخروج من الـ with
+                return result
     except Exception as e:
-        logger.error(f"Database Query Error: {e}")
-        # نرفع الخطأ لكي نعرف مكانه في السجلات (Logs)
+        logger.error(f"❌ Database Query Error: {e}")
+        # رفع الخطأ ضروري لكي تظهر تفاصيله في سجلات Render
         raise e
+        
 
-# طابور الرسائل يبقى كما هو
-message_queue = asyncio.Queue()
-
+async with httpx.AsyncClient(timeout=40.0) as client:
+    response = await client.post("https://accounts.salla.sa/oauth2/token", data=payload)
 async def message_worker():
     while True:
         # الآن الـ Queue يستقبل 3 قيم
@@ -134,6 +132,33 @@ async def message_worker():
             logger.error(f"Worker error: {e}")
         finally:
             message_queue.task_done()
+        
+
+# طابور الرسائل يبقى كما هو
+message_queue = asyncio.Queue()
+
+async def whatsapp_worker():
+    """عامل خلفية لمعالجة الرسائل من الطابور دون تعطيل الـ Webhook"""
+    while True:
+        # جلب المهمة التالية من الطابور
+        task = await message_queue.get()
+        store_id, phone, message = task
+        
+        try:
+            # استدعاء دالة الإرسال التي جهزناها سابقاً
+            success = await send_whatsapp_message(store_id, phone, message)
+            if success:
+                logger.info(f"✅ تم معالجة الرسالة لـ {phone} من الطابور")
+        except Exception as e:
+            logger.error(f"❌ خطأ في عامل الـ WhatsApp: {e}")
+        finally:
+            message_queue.task_done()
+
+# لا تنسى تشغيل العامل عند بدء تشغيل FastAPI
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(whatsapp_worker())
+
 
 # تشغيل العامل عند بدء التطبيق
 
@@ -149,39 +174,52 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 # تحديد مسار حفظ بيانات الجلسة (سيتم إنشاء مجلد في نفس مسار السكربت)
 
-async def get_handler_for_store(store_id: str):
-    """جلب أو إنشاء صفحة واتساب مع استعادة الجلسة من قاعدة البيانات"""
-    global browser_instance, pages, contexts
-    
-    # 1. تشغيل المحرك الرئيسي (مرة واحدة فقط)
-    if not browser_instance or not browser_instance.is_connected():
-        # ملاحظة: عند استخدام launch_persistent_context لاحقاً، 
-        # المتصفح والسياق يندمجان، لكننا نحتاج لمحرك Playwright أولاً
-        from playwright.async_api import async_playwright
-        playwright_manager = await async_playwright().start()
 
-    # 2. التحقق مما إذا كانت الصفحة مفتوحة ونشطة
+
+
+async def get_handler_for_store(store_id: str):
+    """
+    الدالة المركزية والموحدة: جلب أو إنشاء صفحة واتساب مع استعادة الجلسة.
+    تم دمج التحسينات الأمنية وإدارة الرام في مكان واحد.
+    """
+    global playwright_manager, pages, contexts
+    
+    # 1. التحقق مما إذا كانت الصفحة مفتوحة ونشطة بالفعل
     if store_id in pages and not pages[store_id].is_closed():
         try:
+            # فحص سريع للتأكد من أن الصفحة تستجيب (لتفادي الصفحات المعلقة)
             await pages[store_id].evaluate("1+1")
             return pages[store_id]
-        except:
-            logger.warning(f"🔄 صفحة المتجر {store_id} لا تستجيب، إعادة تهيئة...")
+        except Exception:
+            logger.warning(f"🔄 صفحة المتجر {store_id} لا تستجيب، سيتم إعادة تهيئتها...")
+            # تنظيف المراجع القديمة الميتة
+            if store_id in contexts:
+                await contexts[store_id].close()
+            pages.pop(store_id, None)
+            contexts.pop(store_id, None)
 
-    # 3. إدارة الجلسة (الاستعادة من قاعدة البيانات)
+    # 2. التأكد من وجود المجلد الرئيسي للجلسات
+    if not os.path.exists(SESSION_PATH):
+        os.makedirs(SESSION_PATH, exist_ok=True)
+
+    # 3. تشغيل محرك Playwright الرئيسي (مرة واحدة فقط)
+    # ملاحظة: تم إزالة browser_instance لأن Persistent Context لا يحتاجه
+    if playwright_manager is None:
+        playwright_manager = await async_playwright().start()
+        logger.info("🚀 تم تشغيل محرك Playwright بنجاح")
+
+    # 4. إدارة الجلسة (الاستعادة من قاعدة البيانات أو محلياً)
     storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-    
-    # إذا لم يكن المجلد موجوداً محلياً (مثلاً بعد ريستارت لريندر)
     if not os.path.exists(storage_path):
         logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من Supabase...")
         success = await load_session_from_db(store_id)
         if not success:
             os.makedirs(storage_path, exist_ok=True)
-            logger.info(f"🆕 لا توجد جلسة سابقة، سيتم إنشاء مجلد جديد.")
+            logger.info(f"🆕 لا توجد جلسة سابقة، سيتم إنشاء مجلد جديد للمتجر {store_id}")
 
-    # 4. تشغيل المتصفح بنظام الـ Persistent Context
-    # هذا النظام يربط المجلد بالمتصفح مباشرة لحفظ التغييرات
+    # 5. تشغيل المتصفح بنظام الـ Persistent Context
     try:
+        logger.info(f"🌐 فتح متصفح جديد للمتجر: {store_id}")
         context = await playwright_manager.chromium.launch_persistent_context(
             user_data_dir=storage_path,
             headless=True,
@@ -192,26 +230,27 @@ async def get_handler_for_store(store_id: str):
                 "--disable-gpu"
             ],
             viewport={'width': 800, 'height': 600},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         
-        # في نظام الـ Persistent Context، يتم فتح صفحة تلقائياً، نستخدمها أو نفتح واحدة
+        # استخدام الصفحة الافتراضية أو فتح واحدة جديدة
         page = context.pages[0] if context.pages else await context.new_page()
 
-        # 5. تحسين الأداء (منع الصور والوسائط)
+        # 6. تحسين الأداء (تذكر أننا عدلنا دالة block_useless_resources سابقاً لعدم حظر الصور)
         await page.route("**/*", block_useless_resources)
 
-        # 6. التوجه لواتساب ويب
-        await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
+        # 7. التوجه لواتساب ويب (فقط إذا لم يكن المتصفح عليه بالفعل)
+        if "web.whatsapp.com" not in page.url:
+            await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
         
-        # 7. حقن المراقب
+        # 8. حقن المراقب (Observer) لاستقبال الرسائل
         await setup_inbound_observer(page, store_id)
 
-        # تخزين المراجع
+        # 9. تخزين المراجع للاستخدام اللاحق (مهم جداً للسرعة)
         pages[store_id] = page
         contexts[store_id] = context
         
-        logger.info(f"✅ صفحة المتجر {store_id} جاهزة.")
+        logger.info(f"✅ صفحة المتجر {store_id} جاهزة للاستخدام.")
         return page
 
     except Exception as e:
@@ -219,66 +258,18 @@ async def get_handler_for_store(store_id: str):
         return None
 
 
-# دالة منفصلة لمعالجة المنطق لتجنب التعقيد داخل ensure_browser_ready
+# ========================================================
+# الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
+# ========================================================
 
 async def ensure_browser_ready(store_id: str):
     """
-    تتأكد من جاهزية المتصفح للمتجر المحدد.
-    تقوم بتحميل الجلسة من قاعدة البيانات إذا لم تكن موجودة محلياً.
+    دالة توجيهية: تم دمج منطقها مع get_handler_for_store.
+    هذه الدالة موجودة فقط لكي لا يحدث أي خطأ (ImportError أو NameError) 
+    في بقية الملفات التي تعتمد على هذا الاسم.
     """
-    global playwright_manager, browser_instance, contexts, pages
+    return await get_handler_for_store(store_id)
 
-    try:
-        # 1. التأكد من وجود المجلد الرئيسي للجلسات
-        if not os.path.exists(SESSION_PATH):
-            os.makedirs(SESSION_PATH)
-
-        # 2. بدء محرك Playwright إذا لم يكن يعمل
-        if playwright_manager is None:
-            playwright_manager = await async_playwright().start()
-            logger.info("🚀 تم تشغيل محرك Playwright بنجاح")
-
-        # 3. تحديد مسار الجلسة الخاص بهذا المتجر
-        storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-
-        # 4. استعادة الجلسة من قاعدة البيانات (إذا كانت مفقودة محلياً)
-        if not os.path.exists(storage_path):
-            logger.info(f"📥 الجلسة مفقودة محلياً للمتجر {store_id}، جاري محاولة التحميل من Supabase...")
-            # دالة load_session_from_db هي التي تقوم بفك الضغط في storage_path
-            await load_session_from_db(store_id)
-
-        # 5. تشغيل المتصفح بنظام Persistent Context (يربط المجلد بالمتصفح مباشرة)
-        # نتحقق مما إذا كان السياق الخاص بالمتجر موجوداً ومفتوحاً
-        if store_id not in contexts or not browser_instance.is_connected():
-            logger.info(f"🌐 فتح متصفح جديد للمتجر: {store_id}")
-            
-            context = await playwright_manager.chromium.launch_persistent_context(
-                user_data_dir=storage_path,
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu"
-                ],
-                viewport={'width': 800, 'height': 600},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            
-            contexts[store_id] = context
-            # فتح صفحة جديدة أو استخدام الصفحة الافتراضية
-            pages[store_id] = context.pages[0] if context.pages else await context.new_page()
-            
-            # إعداد حظر الصور لتوفير الرام
-            await pages[store_id].route("**/*", block_useless_resources)
-            
-            logger.info(f"✅ المتصفح جاهز الآن للمتجر {store_id}")
-        
-        return pages[store_id]
-
-    except Exception as e:
-        logger.error(f"❌ فشل في ensure_browser_ready للمتجر {store_id}: {e}")
-        return None
 
 async def save_session_to_db(store_id: str):
     try:
@@ -451,14 +442,14 @@ async def setup_inbound_observer(page, store_id: str):
     """)
 
 async def block_useless_resources(route):
-    # قائمة بالموارد التي لا يحتاجها البوت لأداء مهامه البرمجية
-    useless_types = ["image", "media", "font", "manifest", "other"]
+    # إزالة "image" من الحظر لكي يظهر الـ QR وتظهر صور المنتجات لاحقاً
+    useless_types = ["media", "font", "manifest"] 
     
     if route.request.resource_type in useless_types:
         await route.abort()
     else:
-        # يمكنك أيضاً حظر روابط معينة مثل التحليلات (Analytics) لتسريع الأداء
         url = route.request.url
+        # لا تقم بحظر أي شيء يخص whatsapp
         if "google-analytics" in url or "facebook" in url:
             await route.abort()
         else:
@@ -523,18 +514,18 @@ async def salla_request(method: str, endpoint: str, store_id: str, payload: dict
         logger.error(f"❌ خطأ غير متوقع في salla_request: {str(e)}")
         return None
 async def refresh_salla_token(store_id: str) -> Optional[str]:
-    # جلب البيانات عبر SQL
-    query = "SELECT client_id, client_secret, refresh_token FROM store_settings WHERE store_id = :sid"
+    # جلب الـ refresh_token فقط من القاعدة
+    query = "SELECT refresh_token FROM store_settings WHERE store_id = :sid"
     row = execute_db_query(query, {"sid": store_id}, fetch="one")
     
     if not row: return None
     
     url = "https://accounts.salla.sa/oauth2/token"
     payload = {
-        "client_id": row[0],
-        "client_secret": row[1],
+        "client_id": os.getenv("SALLA_CLIENT_ID"),         # مفتاح تطبيقك
+        "client_secret": os.getenv("SALLA_CLIENT_SECRET"), # سر تطبيقك
         "grant_type": "refresh_token",
-        "refresh_token": row[2]
+        "refresh_token": row[0]
     }
     
     async with httpx.AsyncClient() as client:
@@ -544,7 +535,7 @@ async def refresh_salla_token(store_id: str) -> Optional[str]:
             # تحديث البيانات عبر SQL
             update_query = """
                 UPDATE store_settings 
-                SET salla_access_token = :access, refresh_token = :refresh 
+                SET salla_access_token = :access, refresh_token = :refresh, updated_at = NOW() 
                 WHERE store_id = :sid
             """
             execute_db_query(update_query, {
@@ -553,7 +544,10 @@ async def refresh_salla_token(store_id: str) -> Optional[str]:
                 "sid": store_id
             })
             return data["access_token"]
+        else:
+            logger.error(f"❌ فشل تجديد التوكن: {resp.text}")
     return None
+
 async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
     """جلب بيانات الطلب من سلة باستخدام PostgreSQL لجلب التوكن"""
     try:
@@ -1606,10 +1600,10 @@ async def send_whatsapp_message(store_id: str, phone: str, message: str):
 
 @app.get("/callback")
 async def salla_callback(code: str, state: str = None):
-    """استقبال التاجر وتوجيهه للوحة التحكم"""
-    url = "https://accounts.salla.sa/oauth2/token"
+    """استقبال التاجر وتوجيهه للوحة التحكم مع معالجة المهلة والأخطاء"""
+    token_url = "https://accounts.salla.sa/oauth2/token"
+    user_info_url = "https://accounts.salla.sa/oauth2/user/info"
     
-    # ⚠️ ملاحظة هامة: يجب أن يطابق هذا الرابط ما وضعته في لوحة سلة بالحرف
     redirect_uri = os.getenv("SALLA_CALLBACK_URL") 
     
     payload = {
@@ -1621,59 +1615,64 @@ async def salla_callback(code: str, state: str = None):
         "redirect_uri": redirect_uri,
     }
     
-    async with httpx.AsyncClient() as client:
-        # 1. تبادل الكود بالتوكنات (إرسال كـ data وليس json)
-        resp = await client.post(url, data=payload)
-        
-        if resp.status_code != 200:
-            logger.error(f"❌ فشل تبادل التوكن: {resp.text}")
-            # عرض الخطأ القادم من سلة مباشرة في المتصفح للتصحيح
-            return HTMLResponse(content=f"<h1>فشل الربط</h1><p>{resp.text}</p>", status_code=400)
-
-        token_data = resp.json()
-        access_token = token_data.get("access_token")
-        refresh_token = token_data.get("refresh_token")
-
-        # 2. جلب معلومات المتجر للحصول على الـ Store ID الحقيقي
-        user_info_resp = await client.get(
-            "https://accounts.salla.sa/oauth2/user/info", 
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        
-        if user_info_resp.status_code != 200:
-            return HTMLResponse(content="<h1>فشل جلب بيانات المتجر</h1>", status_code=400)
-
-        user_data = user_info_resp.json()
-        # سلة تعيد المعرف في هذا المسار عادةً
-        store_id = str(user_data["data"]["merchant"]["id"])
-        store_name = user_data["data"]["merchant"].get("name", "متجرك")
-
-        # 3. حفظ البيانات في PostgreSQL
-        upsert_query = """
-            INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
-            VALUES (:sid, :access, :refresh, True, NOW())
-            ON CONFLICT (store_id) DO UPDATE SET 
-                salla_access_token = EXCLUDED.salla_access_token,
-                refresh_token = EXCLUDED.refresh_token,
-                is_active = True,
-                updated_at = NOW();
-        """
-        
+    # زيادة المهلة لـ 40 ثانية لضمان استجابة سلة وسرعة Render
+    async with httpx.AsyncClient(timeout=40.0) as client:
         try:
+            # 1. تبادل الكود بالتوكنات
+            resp = await client.post(token_url, data=payload)
+            
+            if resp.status_code != 200:
+                logger.error(f"❌ فشل تبادل التوكن: {resp.text}")
+                return HTMLResponse(content=f"<h1>فشل الربط</h1><p>{resp.text}</p>", status_code=400)
+
+            token_data = resp.json()
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+
+            # 2. جلب معلومات المتجر (بمهلة انتظار كافية)
+            user_info_resp = await client.get(
+                user_info_url, 
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            
+            if user_info_resp.status_code != 200:
+                return HTMLResponse(content="<h1>فشل جلب بيانات المتجر</h1>", status_code=400)
+
+            user_data = user_info_resp.json()
+            
+            # المسار الأكثر دقة للمعرف في سلة
+            store_id = str(user_data["data"]["id"]) 
+            store_name = user_data["data"].get("name", "متجرك")
+
+            # 3. حفظ البيانات في PostgreSQL (تأكد من وجود الأعمدة في القاعدة)
+            upsert_query = """
+                INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
+                VALUES (:sid, :access, :refresh, True, NOW())
+                ON CONFLICT (store_id) DO UPDATE SET 
+                    salla_access_token = EXCLUDED.salla_access_token,
+                    refresh_token = EXCLUDED.refresh_token,
+                    is_active = True,
+                    updated_at = NOW();
+            """
+            
             execute_db_query(upsert_query, {
                 "sid": store_id,
                 "access": access_token,
                 "refresh": refresh_token
             })
-            logger.info(f"🚀 تم الربط بنجاح: {store_name}")
             
-            # 4. التعديل الأهم: التوجيه التلقائي للوحة التحكم بدلاً من رسالة نصية
+            logger.info(f"🚀 تم الربط بنجاح للمتجر: {store_id} ({store_name})")
+            
+            # 4. التوجيه التلقائي للوحة التحكم
             return RedirectResponse(url=f"/admin/dashboard/{store_id}")
             
+        except httpx.ReadTimeout:
+            logger.error("⏳ انتهت مهلة الانتظار مع سيرفر سلة")
+            return HTMLResponse("<h1>خطأ في الاتصال</h1><p>استغرق سيرفر سلة وقتاً طويلاً للرد. حاول مرة أخرى.</p>", status_code=504)
         except Exception as e:
-            logger.error(f"❌ خطأ في قاعدة البيانات: {e}")
-            return HTMLResponse(content=f"<h1>خطأ في حفظ البيانات</h1><p>{str(e)}</p>", status_code=500)
-        
+            logger.error(f"❌ خطأ غير متوقع: {e}")
+            return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500)
+    
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     with open("index.html", "r", encoding="utf-8") as f:
