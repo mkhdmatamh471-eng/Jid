@@ -85,18 +85,24 @@
             <div class="space-y-8">
                 
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center">
-                    <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
-                    <div id="qr-box" class="qr-gradient inline-block p-4 rounded-2xl border-2 border-dashed border-gray-200 transition-all duration-500">
-                        <img id="qr-image" src="https://via.placeholder.com/200?text=Scan+QR" class="w-48 h-48 mx-auto rounded-lg shadow-inner" alt="QR Code">
-                    </div>
-                    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed">
-                        افتح واتساب > الأجهزة المرتبطة > ربط جهاز <br>
-                        ثم قم بمسح الكود أعلاه.
-                    </p>
-                    <button onclick="refreshQR()" class="mt-4 w-full py-2 text-blue-600 text-sm font-bold border border-blue-100 rounded-xl hover:bg-blue-50 transition">
-                        توليد كود جديد 🔄
-                    </button>
-                </div>
+    <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
+    
+    <div id="qr-box" class="qr-gradient flex items-center justify-center w-64 h-64 mx-auto rounded-2xl border-2 border-dashed border-gray-200 overflow-hidden transition-all duration-500">
+        <img id="qr-image" 
+             src="https://via.placeholder.com/200?text=Scan+QR" 
+             class="max-w-[90%] max-h-[90%] object-contain rounded-lg transition-transform duration-300" 
+             alt="QR Code">
+    </div>
+
+    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed">
+        افتح واتساب > الأجهزة المرتبطة > ربط جهاز <br>
+        ثم قم بمسح الكود أعلاه.
+    </p>
+    <button onclick="refreshQR()" class="mt-4 w-full py-2 text-blue-600 text-sm font-bold border border-blue-100 rounded-xl hover:bg-blue-50 transition">
+        توليد كود جديد 🔄
+    </button>
+</div>
+
 
                 <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
                     <h3 class="text-lg font-bold mb-6">إعدادات الذكاء</h3>
@@ -240,17 +246,54 @@
     }
 
     // دوال الأزرار
-    async function refreshQR() {
-        const qrImage = document.getElementById('qr-image');
-        const qrBox = document.getElementById('qr-box');
-        qrBox.style.opacity = "0.3";
-        try {
-            const response = await fetch(`/admin/get-qr/${storeId}`);
-            const data = await response.json();
-            if (data.qr_code) qrImage.src = data.qr_code;
-        } catch (err) { console.error("QR Error"); }
-        finally { qrBox.style.opacity = "1"; }
+async function refreshQR() {
+    const qrImage = document.getElementById('qr-image');
+    const qrBox = document.getElementById('qr-box');
+    
+    // 1. بدء التأثيرات: نبض وتعتيم وضبابية
+    qrBox.classList.add("animate-pulse");
+    qrBox.style.opacity = "0.6";
+    qrImage.style.filter = "blur(3px)";
+    
+    // إزالة كلاسات التكبير القديمة إن وجدت
+    qrImage.classList.remove("scale-110", "scale-100");
+
+    try {
+        const response = await fetch(`/admin/get-qr/${storeId}`);
+        const data = await response.json();
+        
+        if (data.status === "ready" && data.qr_code) {
+            qrImage.src = data.qr_code;
+            Toastify({ text: "✅ كود جديد جاهز للمسح", backgroundColor: "#10b981" }).showToast();
+        } 
+        else if (data.status === "connected") {
+            qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
+            Toastify({ text: "📱 الواتساب متصل بالفعل ✅", backgroundColor: "#3b82f6" }).showToast();
+        } 
+        else {
+            qrImage.src = "https://via.placeholder.com/200?text=Error";
+            Toastify({ text: "⚠️ " + (data.message || "فشل التوليد"), backgroundColor: "#f59e0b" }).showToast();
+        }
+    } catch (err) { 
+        console.error("QR Fetch Error:", err);
+        qrImage.src = "https://via.placeholder.com/200?text=Network+Error";
+        Toastify({ text: "❌ فشل الاتصال بالسيرفر", backgroundColor: "#ef4444" }).showToast();
+    } finally { 
+        // 2. إنهاء التأثيرات وإظهار الصورة بنعومة
+        qrBox.classList.remove("animate-pulse");
+        qrBox.style.opacity = "1";
+        qrImage.style.filter = "none";
+        
+        // تأثير "الظهور المفاجئ" اللطيف (Pop Effect)
+        qrImage.classList.add("transition-all", "duration-500", "scale-110");
+        
+        // إعادة الحجم للطبيعي بعد 300 مللي ثانية
+        setTimeout(() => {
+            qrImage.classList.remove("scale-110");
+            qrImage.classList.add("scale-100");
+        }, 300);
     }
+}
 
     async function saveSettings() {
         const btn = document.getElementById('saveBtn');
