@@ -1531,38 +1531,48 @@ async def update_config(store_id: str, settings: dict):
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     try:
-        # 1. التحقق من المتجر
+        # 1. التحقق من المتجر (استخدام دالتك الموحدة)
         query = "SELECT is_active FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
         if not row: return {"status": "error", "message": "المتجر غير مسجل"}
 
-        # 2. الحصول على الصفحة
+        # 2. الحصول على الصفحة عبر الدالة الموحدة
         page = await get_handler_for_store(store_id)
         if not page: return {"status": "error", "message": "فشل فتح المتصفح"}
 
-        # تحديث الصفحة لضمان توليد كود جديد
-        await page.reload()
+        # 3. تحديث الصفحة لضمان توليد كود جديد تماماً
+        await page.reload(wait_until="networkidle") 
+        logger.info(f"⏳ جاري انتظار توليد QR جديد للمتجر {store_id}...")
         
         try:
-            # الانتظار حتى يظهر الـ QR (سواء كان canvas أو img)
-            await page.wait_for_selector("canvas, img[alt='Scan me!']", timeout=15000)
+            # 4. الانتظار حتى يظهر عنصر الكود
+            await page.wait_for_selector("canvas, img[alt='Scan me!']", timeout=25000)
             
-            # محاولة التقاط الـ QR من الـ canvas أولاً ثم الصور
+            # --- السر هنا: انتظر قليلاً لضمان اكتمال رسم الـ Canvas ---
+            # بدون هذه الثانية، قد تلتقط صورة بيضاء لأن المتصفح لم ينتهِ من الرسم
+            await asyncio.sleep(2) 
+            
+            # 5. محاولة التقاط الـ QR
             qr_element = await page.query_selector("canvas") or await page.query_selector("img[alt='Scan me!']")
             
             if qr_element:
-                img_bytes = await qr_element.screenshot()
+                # التقاط لقطة شاشة دقيقة للعنصر فقط
+                img_bytes = await qr_element.screenshot(type="png")
                 img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                
+                logger.info(f"✅ تم توليد QR بنجاح للمتجر {store_id}")
                 return {
                     "status": "ready",
                     "qr_code": f"data:image/png;base64,{img_base64}",
                     "message": "قم بمسح الكود الآن"
                 }
+                
         except Exception:
-            # فحص إذا كان المستخدم مسجل دخول بالفعل
+            # 6. فحص إذا كان العميل متصلاً بالفعل (ربما الجلسة استعيدت تلقائياً)
             if await page.query_selector("div[data-testid='chat-list']"):
                 return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
-            return {"status": "error", "message": "انتهت مهلة توليد الكود، حاول مجدداً"}
+            
+            return {"status": "error", "message": "انتهت المهلة، تأكد من سرعة الإنترنت وحاول مجدداً"}
 
     except Exception as e:
         logger.error(f"❌ QR Error: {e}")
