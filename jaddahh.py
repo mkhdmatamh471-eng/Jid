@@ -3,7 +3,9 @@ import hmac
 import hashlib
 import tarfile
 import base64
-import io
+import qrcode
+import base64
+from io import BytesIO
 import json
 import logging
 import asyncio
@@ -1528,51 +1530,60 @@ async def update_config(store_id: str, settings: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     try:
-        # 1. التحقق من المتجر (استخدام دالتك الموحدة)
+        # 1. التحقق من المتجر
         query = "SELECT is_active FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
         if not row: return {"status": "error", "message": "المتجر غير مسجل"}
 
-        # 2. الحصول على الصفحة عبر الدالة الموحدة
+        # 2. الحصول على الصفحة
         page = await get_handler_for_store(store_id)
         if not page: return {"status": "error", "message": "فشل فتح المتصفح"}
 
-        # 3. تحديث الصفحة لضمان توليد كود جديد تماماً
-        await page.reload(wait_until="networkidle") 
-        logger.info(f"⏳ جاري انتظار توليد QR جديد للمتجر {store_id}...")
+        # 3. تحديث الصفحة لضمان كود جديد
+        await page.reload(wait_until="domcontentloaded") 
+        logger.info(f"⏳ جاري استخراج بيانات QR للمتجر {store_id}...")
         
         try:
-            # 4. الانتظار حتى يظهر عنصر الكود
-            await page.wait_for_selector("canvas, img[alt='Scan me!']", timeout=25000)
+            # 4. البحث عن النص المرجعي للكود (data-ref)
+            # واتساب يضع نص الكود في حاوية تمتلك خاصية data-ref
+            qr_selector = 'div[data-ref]'
+            await page.wait_for_selector(qr_selector, timeout=30000)
             
-            # --- السر هنا: انتظر قليلاً لضمان اكتمال رسم الـ Canvas ---
-            # بدون هذه الثانية، قد تلتقط صورة بيضاء لأن المتصفح لم ينتهِ من الرسم
-            await asyncio.sleep(20) 
+            # استخراج النص الخام للكود
+            qr_text = await page.get_attribute(qr_selector, "data-ref")
             
-            # 5. محاولة التقاط الـ QR
-            qr_element = await page.query_selector("canvas") or await page.query_selector("img[alt='Scan me!']")
-            
-            if qr_element:
-                # التقاط لقطة شاشة دقيقة للعنصر فقط
-                img_bytes = await qr_element.screenshot(type="png")
-                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+            if qr_text:
+                # 5. توليد الكود برمجياً (أضمن وأوضح من لقطة الشاشة)
+                qr = qrcode.QRCode(version=1, box_size=10, border=2)
+                qr.add_data(qr_text)
+                qr.make(fit=True)
                 
-                logger.info(f"✅ تم توليد QR بنجاح للمتجر {store_id}")
+                img = qr.make_image(fill_color="black", back_color="white")
+                
+                # تحويل الصورة إلى Base64
+                buffered = BytesIO()
+                img.save(buffered, format="PNG")
+                img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                
+                logger.info(f"✅ تم توليد QR برمجياً بنجاح للمتجر {store_id}")
                 return {
                     "status": "ready",
                     "qr_code": f"data:image/png;base64,{img_base64}",
                     "message": "قم بمسح الكود الآن"
                 }
                 
-        except Exception:
-            # 6. فحص إذا كان العميل متصلاً بالفعل (ربما الجلسة استعيدت تلقائياً)
+        except Exception as e:
+            # 6. فحص الاتصال التلقائي
             if await page.query_selector("div[data-testid='chat-list']"):
                 return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
             
-            return {"status": "error", "message": "انتهت المهلة، تأكد من سرعة الإنترنت وحاول مجدداً"}
+            logger.warning(f"⚠️ فشل استخراج QR: {e}")
+            return {"status": "error", "message": "لم يتم العثور على الكود، حاول مجدداً"}
 
     except Exception as e:
         logger.error(f"❌ QR Error: {e}")
