@@ -1,11 +1,10 @@
-# Web Framework & Server
+# --- المكتبات الأساسية التي أضفتها أنت ---
 fastapi
 uvicorn
 python-multipart
 sqlalchemy
 psycopg2-binary
 supabase
-
 playwright
 httpx
 aiofiles
@@ -13,4 +12,6 @@ jinja2
 python-dotenv
 pydantic
 pycryptodome
-# ملاحظة: hmac, hashlib, json, logging, asyncio هي مكتبات مدمجة في بايثون ولا تحتاج تثبيت
+qrcode[pil]  
+Pillow            
+python-slugify
