@@ -25,7 +25,7 @@
 
         /* 1. تأثير الزجاج المطور (Glassmorphism) */
         .glass-card {
-            background: rgba(255, 255, 255, 0.8);
+            background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.3);
             transition: all 0.3s ease;
@@ -33,11 +33,12 @@
         .glass-card:hover {
             transform: translateY(-5px);
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05);
+            border-color: rgba(16, 185, 129, 0.2);
         }
 
         /* 2. تحسين خلفية الـ QR وتدرج الألوان */
         .qr-gradient { 
-            background: radial-gradient(circle at top left, #f8fafc, #f1f5f9);
+            background: radial-gradient(circle at top left, #ffffff, #f1f5f9);
             position: relative;
             overflow: hidden;
         }
@@ -49,37 +50,37 @@
             50% { color: var(--primary); transform: scale(1.1); font-weight: 900; }
         }
 
-        /* 4. تأثير ظهور الـ QR (Success Pop) */
-        .success-pop { 
-            animation: success-bounce 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); 
-        }
-        @keyframes success-bounce {
-            0% { transform: scale(0); opacity: 0; }
-            80% { transform: scale(1.1); }
-            100% { transform: scale(1); opacity: 1; }
-        }
-
-        /* 5. تخصيص شريط التمرير (Scrollbar) */
+        /* 4. تخصيص شريط التمرير (Scrollbar) */
         ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
 
-        /* 6. استجابة الجداول (Mobile Optimized) */
+        /* 5. استجابة الجداول (Mobile Optimized) */
         .custom-table-container {
             mask-image: linear-gradient(to right, black 95%, transparent);
             -webkit-mask-image: linear-gradient(to right, black 95%, transparent);
         }
 
-        /* 7. أنيميشن التحميل (Skeleton Loader) */
-        .skeleton {
-            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+        /* 6. أنيميشن التحميل (Skeleton Loader) */
+        .skeleton-box {
+            background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
             background-size: 200% 100%;
-            animation: loading 1.5s infinite;
+            animation: skeleton-loading 1.5s infinite;
+            border-radius: 8px;
+            height: 40px;
+            width: 80%;
         }
-        @keyframes loading {
+        @keyframes skeleton-loading {
             0% { background-position: 200% 0; }
             100% { background-position: -200% 0; }
+        }
+        
+        /* تأثير التلاشي الناعم للكروت */
+        .fade-in { animation: fadeIn 0.8s ease-in-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -87,57 +88,60 @@
 <body class="bg-gray-50 text-gray-800">
 
     <div class="min-h-screen p-4 md:p-8">
-        <header class="max-w-6xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-center gap-4">
+        <header class="max-w-6xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-center gap-4 fade-in">
             <div>
                 <h1 class="text-3xl font-bold text-gray-900">لوحة تحكم البوت الذكي 🤖</h1>
-                <p class="text-gray-500">مرحباً بك يا محمد، يمكنك متابعة أداء الذكاء الاصطناعي وتخصيص الإعدادات.</p>
+                <p class="text-gray-500 mt-1">مرحباً بك، يمكنك متابعة أداء الذكاء الاصطناعي وتخصيص الإعدادات.</p>
             </div>
-            <div class="flex items-center gap-3">
-                <span class="flex h-3 w-3 rounded-full bg-green-500"></span>
-                <span class="bg-green-100 text-green-700 px-4 py-2 rounded-full font-bold text-sm">الجلسة نشطة</span>
+            <div class="flex items-center gap-3 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-100">
+                <span class="flex h-3 w-3 rounded-full bg-green-500 animate-pulse"></span>
+                <span class="text-green-700 font-bold text-sm">الجلسة نشطة</span>
             </div>
         </header>
 
-        <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
-    
-    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 border-r-4 border-r-green-500">
-        <p class="text-gray-500 text-sm font-semibold">أرباح مستردة (بالريال) 💰</p>
-        <h2 class="text-4xl font-black text-green-600 mt-1" id="recoveredRevenue">--</h2>
-        <p class="text-[10px] text-gray-400 mt-1">بناءً على السلال التي أكمل البوت استردادها</p>
-    </div>
+        <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10 fade-in">
+            <div class="glass-card p-6 rounded-3xl border border-gray-100 border-r-4 border-r-green-500 relative overflow-hidden group">
+                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">أرباح مستردة 💰</p>
+                <h2 class="text-4xl font-black text-green-600 mt-2 tracking-tight" id="recoveredRevenue">--</h2>
+                <p class="text-[10px] text-gray-400 mt-1">بناءً على السلال المستردة</p>
+                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">💹</div>
+            </div>
 
-    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-        <p class="text-gray-500 text-sm font-semibold">إجمالي ردود البوت</p>
-        <h2 class="text-4xl font-black text-gray-900 mt-1" id="botUsage">--</h2>
-    </div>
-    
-    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-        <p class="text-gray-500 text-sm font-semibold">سلال متروكة</p>
-        <h2 class="text-4xl font-black text-orange-500 mt-1" id="abandonedCount">--</h2>
-    </div>
+            <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
+                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">إجمالي ردود البوت</p>
+                <h2 class="text-4xl font-black text-gray-900 mt-2" id="botUsage">--</h2>
+                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🤖</div>
+            </div>
 
-    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-        <p class="text-gray-500 text-sm font-semibold">دقة AI</p>
-        <h2 class="text-4xl font-black text-blue-500 mt-1">98.4%</h2>
-    </div>
-</div>
-<div class="max-w-6xl mx-auto mb-10">
-    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-        <h3 class="text-xl font-bold mb-6">مخطط الاسترداد الأسبوعي 📈</h3>
-        <div style="position: relative; height:300px; width:100%">
-            <canvas id="recoveryChart"></canvas>
+            <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
+                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">سلال متروكة</p>
+                <h2 class="text-4xl font-black text-orange-500 mt-2" id="abandonedCount">--</h2>
+                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🛒</div>
+            </div>
+
+            <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
+                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">دقة الذكاء AI</p>
+                <h2 class="text-4xl font-black text-blue-500 mt-2">98.4%</h2>
+                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🎯</div>
+            </div>
         </div>
-    </div>
-</div>
-</div>
 
-        <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden h-fit">
+        <div class="max-w-6xl mx-auto mb-10 fade-in">
+            <div class="glass-card p-6 rounded-3xl border border-gray-100">
+                <h3 class="text-xl font-bold mb-6">مخطط الاسترداد الأسبوعي 📈</h3>
+                <div style="position: relative; height:300px; width:100%" class="custom-table-container">
+                    <canvas id="recoveryChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8 fade-in">
+            <div class="lg:col-span-2 glass-card rounded-3xl border border-gray-100 overflow-hidden h-fit">
                 <div class="p-6 border-b border-gray-50 flex justify-between items-center">
                     <h3 class="text-xl font-bold">آخر المحادثات</h3>
-                    <button onclick="loadDashboard()" class="text-blue-600 text-sm hover:underline">تحديث 🔄</button>
+                    <button onclick="loadDashboard()" class="text-blue-600 text-sm hover:underline font-semibold">تحديث 🔄</button>
                 </div>
-                <div class="overflow-x-auto">
+                <div class="overflow-x-auto custom-table-container">
                     <table class="w-full text-right">
                         <thead class="bg-gray-50 text-gray-500 text-sm">
                             <tr>
@@ -153,38 +157,37 @@
 
             <div class="space-y-8">
                 
-                <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center">
-    <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
-    
-    <div id="qr-box" class="qr-gradient flex items-center justify-center w-64 h-64 mx-auto rounded-2xl border-2 border-dashed border-gray-200 overflow-hidden transition-all duration-500">
-        <img id="qr-image" 
-             src="https://via.placeholder.com/200?text=Scan+QR" 
-             class="max-w-[90%] max-h-[90%] object-contain rounded-lg transition-transform duration-300" 
-             alt="QR Code">
-    </div>
+                <div class="glass-card p-6 rounded-3xl border border-gray-100 text-center">
+                    <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
+                    
+                    <div id="qr-box" class="qr-gradient flex items-center justify-center w-64 h-64 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden transition-all duration-500">
+                        <img id="qr-image" 
+                             src="https://via.placeholder.com/200?text=Scan+QR" 
+                             class="max-w-[85%] max-h-[85%] object-contain rounded-lg transition-transform duration-300" 
+                             alt="QR Code">
+                    </div>
 
-    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed">
-        افتح واتساب > الأجهزة المرتبطة > ربط جهاز <br>
-        ثم قم بمسح الكود أعلاه.
-    </p>
-    <button onclick="refreshQR()" class="mt-4 w-full py-2 text-blue-600 text-sm font-bold border border-blue-100 rounded-xl hover:bg-blue-50 transition">
-        توليد كود جديد 🔄
-    </button>
-</div>
+                    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
+                        افتح واتساب > الأجهزة المرتبطة > ربط جهاز <br>
+                        ثم قم بمسح الكود أعلاه.
+                    </p>
+                    <button onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm">
+                        توليد كود جديد 🔄
+                    </button>
+                </div>
 
-
-                <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                <div class="glass-card p-6 rounded-3xl border border-gray-100">
                     <h3 class="text-lg font-bold mb-6">إعدادات الذكاء</h3>
                     <div class="space-y-5">
                         <div>
                             <label class="block text-sm font-semibold text-gray-700 mb-2">رقم المسؤول</label>
                             <input type="text" id="adminPhone" placeholder="9665xxxxxxxx" 
-                                   class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition">
+                                   class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition shadow-inner text-left" dir="ltr">
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-gray-700 mb-2">تعليمات البوت (Prompt)</label>
                             <textarea id="systemPrompt" rows="4" 
-                                      class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition"
+                                      class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition shadow-inner"
                                       placeholder="أنت مساعد ذكي لمتجر..."></textarea>
                         </div>
                         <button onclick="saveSettings()" id="saveBtn" 
@@ -199,13 +202,10 @@
     </div>
 
     <script>
-    // 1. استلام الـ ID من السيرفر بشكل ديناميكي (هذا هو السر!)
     const storeId = "{{ store_id }}"; 
-
     let recoveryChartInstance = null;
 
     async function loadDashboard() {
-        // التحقق من وجود معرف المتجر قبل البدء
         if (!storeId || storeId === "None" || storeId === "") {
             console.error("Store ID is missing");
             return;
@@ -217,33 +217,41 @@
             
             const data = await response.json();
 
-            // 2. تحديث الأرقام مع إضافة (Optional Chaining) لمنع الانهيار إذا نقصت بيانات
-            document.getElementById('botUsage').innerText = Number(data.bot_usage || 0).toLocaleString();
-            document.getElementById('abandonedCount').innerText = data.salla_stats?.abandoned_carts_count || 0;
-            
-            const revenueElem = document.getElementById('recoveredRevenue');
-            const totalSaved = data.summary?.total_revenue_saved || 0;
-            revenueElem.innerText = `${Number(totalSaved).toLocaleString()} ر.س`;
+            // تحديث الأرقام مع التأثير
+            const updateStat = (id, value) => {
+                const el = document.getElementById(id);
+                if (el.innerText !== String(value)) {
+                    el.innerText = value;
+                    el.classList.add('number-update');
+                    setTimeout(() => el.classList.remove('number-update'), 1500);
+                }
+            };
 
-            // 3. تحديث الجدول
+            updateStat('botUsage', Number(data.bot_usage || 0).toLocaleString());
+            updateStat('abandonedCount', data.salla_stats?.abandoned_carts_count || 0);
+            
+            const totalSaved = data.summary?.total_revenue_saved || 0;
+            updateStat('recoveredRevenue', `${Number(totalSaved).toLocaleString()} ر.س`);
+
+            // تحديث الجدول
             const chatTable = document.getElementById('recentChats');
             if (data.recent_activity && data.recent_activity.length > 0) {
                 chatTable.innerHTML = data.recent_activity.map(chat => `
                     <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
-                        <td class="p-4 font-bold text-xs">${chat.customers?.phone_number || 'عميل'}</td>
+                        <td class="p-4 font-bold text-xs" dir="ltr" style="text-align: right;">${chat.customers?.phone_number || 'عميل'}</td>
                         <td class="p-4 text-xs text-gray-600 truncate max-w-[150px]">${chat.content}</td>
                         <td class="p-4 text-center">
-                            <span class="px-2 py-1 rounded-full text-[9px] font-bold ${chat.role === 'assistant' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}">
+                            <span class="px-3 py-1 rounded-full text-[10px] font-bold ${chat.role === 'assistant' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}">
                                 ${chat.role === 'assistant' ? '🤖 آلي' : '👤 عميل'}
                             </span>
                         </td>
                     </tr>
                 `).join('');
             } else {
-                chatTable.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400 text-xs">لا توجد محادثات نشطة حالياً</td></tr>';
+                chatTable.innerHTML = '<tr><td colspan="3" class="p-6 text-center text-gray-400 text-xs">لا توجد محادثات نشطة حالياً</td></tr>';
             }
 
-            // 4. إدارة المخطط البياني (نسخة معدلة لضبط الإزاحة والحجم)
+            // رسم المخطط البياني
             const ctx = document.getElementById('recoveryChart').getContext('2d');
             if (recoveryChartInstance) {
                 recoveryChartInstance.destroy();
@@ -260,51 +268,21 @@
                         backgroundColor: 'rgba(16, 185, 129, 0.1)',
                         fill: true,
                         tension: 0.4,
-                        pointRadius: 4, // تكبير النقاط قليلاً للوضوح
-                        borderWidth: 3  // زيادة سمك الخط
+                        pointRadius: 4, 
+                        borderWidth: 3  
                     }]
                 },
                 options: { 
                     responsive: true, 
                     maintainAspectRatio: false,
-                    // إضافة إزاحة (Padding) حول الرسم البياني لمنع التصاق الخط بالحواف
-                    layout: {
-                        padding: {
-                            left: 10,
-                            right: 20,
-                            top: 20,
-                            bottom: 10
-                        }
-                    },
+                    layout: { padding: { left: 10, right: 20, top: 20, bottom: 10 } },
                     plugins: { 
                         legend: { display: false },
-                        tooltip: {
-                            backgroundColor: '#1f2937',
-                            titleFont: { family: 'Cairo' },
-                            bodyFont: { family: 'Cairo' },
-                            padding: 10,
-                            cornerRadius: 8,
-                            displayColors: false
-                        }
+                        tooltip: { backgroundColor: '#1f2937', titleFont: { family: 'Cairo' }, bodyFont: { family: 'Cairo' }, padding: 10, cornerRadius: 8, displayColors: false }
                     },
                     scales: {
-                        y: { 
-                            beginAtZero: true, 
-                            grid: { display: true, color: '#f3f4f6' }, // شبكة خفيفة جداً للارتفاع
-                            ticks: {
-                                font: { family: 'Cairo', size: 10 },
-                                color: '#9ca3af',
-                                padding: 10 // إزاحة الأرقام عن المحور
-                            }
-                        },
-                        x: { 
-                            grid: { display: false },
-                            ticks: {
-                                font: { family: 'Cairo', size: 10 },
-                                color: '#9ca3af',
-                                padding: 5
-                            }
-                        }
+                        y: { beginAtZero: true, grid: { display: true, color: '#f3f4f6' }, ticks: { font: { family: 'Cairo', size: 10 }, color: '#9ca3af', padding: 10 } },
+                        x: { grid: { display: false }, ticks: { font: { family: 'Cairo', size: 10 }, color: '#9ca3af', padding: 5 } }
                     }
                 }
             });
@@ -314,55 +292,47 @@
         }
     }
 
-    // دوال الأزرار
-async function refreshQR() {
-    const qrImage = document.getElementById('qr-image');
-    const qrBox = document.getElementById('qr-box');
-    
-    // 1. بدء التأثيرات: نبض وتعتيم وضبابية
-    qrBox.classList.add("animate-pulse");
-    qrBox.style.opacity = "0.6";
-    qrImage.style.filter = "blur(3px)";
-    
-    // إزالة كلاسات التكبير القديمة إن وجدت
-    qrImage.classList.remove("scale-110", "scale-100");
+    async function refreshQR() {
+        const qrImage = document.getElementById('qr-image');
+        const qrBox = document.getElementById('qr-box');
+        
+        qrBox.classList.add("animate-pulse");
+        qrBox.style.opacity = "0.6";
+        qrImage.style.filter = "blur(3px)";
+        qrImage.classList.remove("scale-110", "scale-100");
 
-    try {
-        const response = await fetch(`/admin/get-qr/${storeId}`);
-        const data = await response.json();
-        
-        if (data.status === "ready" && data.qr_code) {
-            qrImage.src = data.qr_code;
-            Toastify({ text: "✅ كود جديد جاهز للمسح", backgroundColor: "#10b981" }).showToast();
-        } 
-        else if (data.status === "connected") {
-            qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
-            Toastify({ text: "📱 الواتساب متصل بالفعل ✅", backgroundColor: "#3b82f6" }).showToast();
-        } 
-        else {
-            qrImage.src = "https://via.placeholder.com/200?text=Error";
-            Toastify({ text: "⚠️ " + (data.message || "فشل التوليد"), backgroundColor: "#f59e0b" }).showToast();
+        try {
+            const response = await fetch(`/admin/get-qr/${storeId}`);
+            const data = await response.json();
+            
+            if (data.status === "ready" && data.qr_code) {
+                qrImage.src = data.qr_code;
+                Toastify({ text: "✅ كود جديد جاهز للمسح", backgroundColor: "#10b981" }).showToast();
+            } 
+            else if (data.status === "connected") {
+                qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
+                Toastify({ text: "📱 الواتساب متصل بالفعل ✅", backgroundColor: "#3b82f6" }).showToast();
+            } 
+            else {
+                qrImage.src = "https://via.placeholder.com/200?text=Error";
+                Toastify({ text: "⚠️ " + (data.message || "فشل التوليد"), backgroundColor: "#f59e0b" }).showToast();
+            }
+        } catch (err) { 
+            console.error("QR Fetch Error:", err);
+            qrImage.src = "https://via.placeholder.com/200?text=Network+Error";
+            Toastify({ text: "❌ فشل الاتصال بالسيرفر", backgroundColor: "#ef4444" }).showToast();
+        } finally { 
+            qrBox.classList.remove("animate-pulse");
+            qrBox.style.opacity = "1";
+            qrImage.style.filter = "none";
+            
+            qrImage.classList.add("transition-all", "duration-500", "scale-110");
+            setTimeout(() => {
+                qrImage.classList.remove("scale-110");
+                qrImage.classList.add("scale-100");
+            }, 300);
         }
-    } catch (err) { 
-        console.error("QR Fetch Error:", err);
-        qrImage.src = "https://via.placeholder.com/200?text=Network+Error";
-        Toastify({ text: "❌ فشل الاتصال بالسيرفر", backgroundColor: "#ef4444" }).showToast();
-    } finally { 
-        // 2. إنهاء التأثيرات وإظهار الصورة بنعومة
-        qrBox.classList.remove("animate-pulse");
-        qrBox.style.opacity = "1";
-        qrImage.style.filter = "none";
-        
-        // تأثير "الظهور المفاجئ" اللطيف (Pop Effect)
-        qrImage.classList.add("transition-all", "duration-500", "scale-110");
-        
-        // إعادة الحجم للطبيعي بعد 300 مللي ثانية
-        setTimeout(() => {
-            qrImage.classList.remove("scale-110");
-            qrImage.classList.add("scale-100");
-        }, 300);
     }
-}
 
     async function saveSettings() {
         const btn = document.getElementById('saveBtn');
@@ -387,9 +357,8 @@ async function refreshQR() {
         }
     }
 
-    // التشغيل الأول والتحديث الدوري
     loadDashboard();
     setInterval(loadDashboard, 60000);
-</script>
+    </script>
 </body>
 </html>
