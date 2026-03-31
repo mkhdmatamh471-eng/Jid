@@ -34,10 +34,9 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse 
-
 templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(jaddahh)
 # تعريف المتغيرات كـ None في البداية
 playwright_manager = None
 browser_instance = None
@@ -193,84 +192,78 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 async def get_handler_for_store(store_id: str):
     """
-    الدالة المركزية والموحدة: جلب أو إنشاء صفحة واتساب مع استعادة الجلسة.
-    تم دمج التحسينات الأمنية وإدارة الرام في مكان واحد.
+    الدالة المركزية: تم تصحيح مكان المراقب لضمان حفظ الجلسة في Supabase فور المسح.
     """
     global playwright_manager, pages, contexts
     
-    # 1. التحقق مما إذا كانت الصفحة مفتوحة ونشطة بالفعل
+    # 1. التحقق من الصفحة النشطة
     if store_id in pages and not pages[store_id].is_closed():
         try:
-            # فحص سريع للتأكد من أن الصفحة تستجيب (لتفادي الصفحات المعلقة)
             await pages[store_id].evaluate("1+1")
             return pages[store_id]
         except Exception:
-            logger.warning(f"🔄 صفحة المتجر {store_id} لا تستجيب، سيتم إعادة تهيئتها...")
-            # تنظيف المراجع القديمة الميتة
-            if store_id in contexts:
-                await contexts[store_id].close()
+            logger.warning(f"🔄 إعادة تهيئة صفحة المتجر {store_id}...")
+            if store_id in contexts: await contexts[store_id].close()
             pages.pop(store_id, None)
             contexts.pop(store_id, None)
 
-    # 2. التأكد من وجود المجلد الرئيسي للجلسات
-    if not os.path.exists(SESSION_PATH):
-        os.makedirs(SESSION_PATH, exist_ok=True)
+    if not os.path.exists(SESSION_PATH): os.makedirs(SESSION_PATH, exist_ok=True)
 
-    # 3. تشغيل محرك Playwright الرئيسي (مرة واحدة فقط)
-    # ملاحظة: تم إزالة browser_instance لأن Persistent Context لا يحتاجه
     if playwright_manager is None:
         playwright_manager = await async_playwright().start()
         logger.info("🚀 تم تشغيل محرك Playwright بنجاح")
 
-    # 4. إدارة الجلسة (الاستعادة من قاعدة البيانات أو محلياً)
+    # 4. محاولة استعادة الجلسة من Supabase
     storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
     if not os.path.exists(storage_path):
         logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من Supabase...")
-        success = await load_session_from_db(store_id)
+        success = await load_session_from_db(store_id) # استدعاء دالة الاستعادة التي تعتمد على session_data
         if not success:
             os.makedirs(storage_path, exist_ok=True)
-            logger.info(f"🆕 لا توجد جلسة سابقة، سيتم إنشاء مجلد جديد للمتجر {store_id}")
+            logger.info(f"🆕 جلسة جديدة بالكامل للمتجر {store_id}")
 
-    # 5. تشغيل المتصفح بنظام الـ Persistent Context
+    # 5. تشغيل المتصفح
     try:
-        logger.info(f"🌐 فتح متصفح جديد للمتجر: {store_id}")
+        logger.info(f"🌐 فتح متصفح المتجر: {store_id}")
         context = await playwright_manager.chromium.launch_persistent_context(
             user_data_dir=storage_path,
             headless=True,
-            args=[
-                "--no-sandbox", 
-                "--disable-setuid-sandbox", 
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ],
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             viewport={'width': 800, 'height': 600},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         
-        # استخدام الصفحة الافتراضية أو فتح واحدة جديدة
         page = context.pages[0] if context.pages else await context.new_page()
-
-        # 6. تحسين الأداء (تذكر أننا عدلنا دالة block_useless_resources سابقاً لعدم حظر الصور)
         await page.route("**/*", block_useless_resources)
 
-        # 7. التوجه لواتساب ويب (فقط إذا لم يكن المتصفح عليه بالفعل)
         if "web.whatsapp.com" not in page.url:
             await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
         
-        # 8. حقن المراقب (Observer) لاستقبال الرسائل
         await setup_inbound_observer(page, store_id)
 
-        # 9. تخزين المراجع للاستخدام اللاحق (مهم جداً للسرعة)
         pages[store_id] = page
         contexts[store_id] = context
-        
+
+        # --- التصحيح هنا: مراقب تسجيل الدخول داخل الـ try لضمان التنفيذ ---
+        async def monitor_and_save():
+            try:
+                # الانتظار حتى ينجح المسح (ظهور قائمة الدردشات)
+                await page.wait_for_selector("div[data-testid='chat-list']", timeout=300000)
+                logger.info(f"✨ نجاح تسجيل الدخول! جاري رفع الجلسة للمتجر {store_id} إلى Supabase...")
+                # دالة تضغط المجلد وترفعه لعمود session_data في قاعدة البيانات
+                await save_session_to_db(store_id) 
+            except Exception as e:
+                logger.warning(f"⚠️ تنبيه: لم يتم تحديث الجلسة في القاعدة (ربما لم يتم المسح): {e}")
+
+        # تشغيل المهمة في الخلفية فوراً
+        asyncio.create_task(monitor_and_save())
+
         logger.info(f"✅ صفحة المتجر {store_id} جاهزة للاستخدام.")
         return page
 
     except Exception as e:
-        logger.error(f"❌ خطأ أثناء تشغيل متصفح المتجر {store_id}: {e}")
+        logger.error(f"❌ خطأ كارثي في تشغيل المتجر {store_id}: {e}")
         return None
-
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
@@ -480,26 +473,39 @@ async def block_useless_resources(route):
 
 
 async def salla_request(method: str, endpoint: str, store_id: str, payload: dict = None):
-    """دالة موحدة لطلبات سلة تعتمد على PostgreSQL مع تجديد تلقائي للتوكن"""
+    """
+    دالة موحدة لطلبات سلة:
+    1. تقرأ من أي حقل توكن متاح (salla_access_token أو access_token).
+    2. تعالج الخطأ 404 عبر التأكد من المسار.
+    3. تجدد التوكن تلقائياً عند الخطأ 401.
+    """
     try:
-        # 1. جلب التوكن من قاعدة البيانات مباشرة
-        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
+        # 1. جلب التوكن بذكاء (يأخذ أول قيمة غير فارغة تقابله من الحقلين)
+        query = """
+            SELECT COALESCE(salla_access_token, access_token) 
+            FROM store_settings 
+            WHERE store_id = :sid 
+            LIMIT 1
+        """
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
         
-        if not row:
-            logger.error(f"❌ فشل جلب التوكن للمتجر {store_id}: المتجر غير مسجل.")
+        if not row or not row[0]:
+            logger.error(f"❌ فشل جلب التوكن للمتجر {store_id}: كلا حقلي التوكن فارغين.")
             return None
             
         token = row[0]
-        url = f"https://api.salla.dev/admin/v2/{endpoint}"
+        # تأكد أن endpoint لا يبدأ بـ / لتجنب مشاكل الروابط
+        clean_endpoint = endpoint.lstrip('/')
+        url = f"https://api.salla.dev/admin/v2/{clean_endpoint}"
+        
         headers = {
             "Authorization": f"Bearer {token}", 
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
         
-        async with httpx.AsyncClient() as client:
-            # 2. تنفيذ الطلب بناءً على الطريقة (GET, POST, etc.)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 2. تنفيذ الطلب
             if method.upper() == "GET":
                 resp = await client.get(url, headers=headers)
             else:
@@ -507,64 +513,133 @@ async def salla_request(method: str, endpoint: str, store_id: str, payload: dict
                 
             # 3. معالجة انتهاء صلاحية التوكن (401)
             if resp.status_code == 401:
-                logger.warning(f"🔄 توكن المتجر {store_id} منتهي، جاري التجديد...")
+                logger.warning(f"🔄 توكن المتجر {store_id} منتهي، جاري التجديد وتحديث الحقلين...")
                 new_token = await refresh_salla_token(store_id)
                 
                 if new_token:
-                    # إعادة المحاولة مرة واحدة فقط بالتوكن الجديد
+                    # إعادة المحاولة بالتوكن الجديد
                     headers["Authorization"] = f"Bearer {new_token}"
                     if method.upper() == "GET":
                         resp = await client.get(url, headers=headers)
                     else:
                         resp = await client.post(url, headers=headers, json=payload)
                 else:
-                    logger.error(f"❌ فشل تجديد التوكن للمتجر {store_id}")
                     return None
 
             # 4. إعادة البيانات إذا كان الطلب ناجحاً
             if resp.status_code in [200, 201]:
                 return resp.json()
             else:
-                logger.error(f"⚠️ Salla API Error [{resp.status_code}]: {resp.text}")
+                logger.error(f"⚠️ Salla API Error [{resp.status_code}] على {endpoint}: {resp.text}")
                 return None
 
     except Exception as e:
         logger.error(f"❌ خطأ غير متوقع في salla_request: {str(e)}")
         return None
+
 async def refresh_salla_token(store_id: str) -> Optional[str]:
-    # جلب الـ refresh_token فقط من القاعدة
-    query = "SELECT refresh_token FROM store_settings WHERE store_id = :sid"
-    row = execute_db_query(query, {"sid": store_id}, fetch="one")
-    
-    if not row: return None
-    
-    url = "https://accounts.salla.sa/oauth2/token"
-    payload = {
-        "client_id": os.getenv("SALLA_CLIENT_ID"),         # مفتاح تطبيقك
-        "client_secret": os.getenv("SALLA_CLIENT_SECRET"), # سر تطبيقك
-        "grant_type": "refresh_token",
-        "refresh_token": row[0]
-    }
-    
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, data=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            # تحديث البيانات عبر SQL
-            update_query = """
-                UPDATE store_settings 
-                SET salla_access_token = :access, refresh_token = :refresh, updated_at = NOW() 
-                WHERE store_id = :sid
-            """
-            execute_db_query(update_query, {
-                "access": data["access_token"],
-                "refresh": data["refresh_token"],
-                "sid": store_id
-            })
-            return data["access_token"]
-        else:
-            logger.error(f"❌ فشل تجديد التوكن: {resp.text}")
-    return None
+    """تجديد التوكن وتحديث كلا الحقلين في قاعدة البيانات لضمان التطابق"""
+    try:
+        # جلب الـ refresh_token فقط من القاعدة
+        query = "SELECT refresh_token FROM store_settings WHERE store_id = :sid"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
+        
+        if not row or not row[0]:
+            logger.error(f"❌ لا يوجد refresh_token للمتجر {store_id}")
+            return None
+        
+        url = "https://accounts.salla.sa/oauth2/token"
+        payload = {
+            "client_id": os.getenv("SALLA_CLIENT_ID"),
+            "client_secret": os.getenv("SALLA_CLIENT_SECRET"),
+            "grant_type": "refresh_token",
+            "refresh_token": row[0]
+        }
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, data=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                new_access = data["access_token"]
+                new_refresh = data["refresh_token"]
+
+                # تحديث الحقلين (salla_access_token و access_token) معاً ليكونوا "نفس بعض"
+                update_query = """
+                    UPDATE store_settings 
+                    SET salla_access_token = :access, 
+                        access_token = :access, 
+                        refresh_token = :refresh, 
+                        updated_at = NOW() 
+                    WHERE store_id = :sid
+                """
+                execute_db_query(update_query, {
+                    "access": new_access,
+                    "refresh": new_refresh,
+                    "sid": store_id
+                })
+                logger.info(f"✅ تم تجديد وتوحيد التوكنات للمتجر {store_id} بنجاح.")
+                return new_access
+            else:
+                logger.error(f"❌ فشل تجديد التوكن من سلة: {resp.text}")
+                return None
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء عملية التجديد: {e}")
+        return None
+async def refresh_salla_token(store_id: str) -> Optional[str]:
+    """
+    تجديد التوكن وتحديث الحقلين (salla_access_token و access_token) معاً لضمان التطابق.
+    """
+    try:
+        # 1. جلب الـ refresh_token الحالي من القاعدة
+        query = "SELECT refresh_token FROM store_settings WHERE store_id = :sid"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
+        
+        if not row or not row[0]:
+            logger.error(f"❌ لا يوجد refresh_token للمتجر {store_id} في قاعدة البيانات.")
+            return None
+        
+        # 2. إعداد طلب التجديد لـ Salla OAuth
+        url = "https://accounts.salla.sa/oauth2/token"
+        payload = {
+            "client_id": os.getenv("SALLA_CLIENT_ID"),         # مفتاح تطبيقك من Render Env
+            "client_secret": os.getenv("SALLA_CLIENT_SECRET"), # سر تطبيقك من Render Env
+            "grant_type": "refresh_token",
+            "refresh_token": row[0]
+        }
+        
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, data=payload)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                new_access = data["access_token"]
+                new_refresh = data["refresh_token"]
+
+                # 3. تحديث البيانات: جعل الحقلين "نفس بعض" تلقائياً
+                update_query = """
+                    UPDATE store_settings 
+                    SET salla_access_token = :access, 
+                        access_token = :access, 
+                        refresh_token = :refresh, 
+                        updated_at = NOW() 
+                    WHERE store_id = :sid
+                """
+                execute_db_query(update_query, {
+                    "access": new_access,
+                    "refresh": new_refresh,
+                    "sid": store_id
+                })
+                
+                logger.info(f"✅ تم تجديد وتوحيد التوكنات للمتجر {store_id} بنجاح.")
+                return new_access
+            else:
+                logger.error(f"❌ فشل تجديد التوكن من سلة: {resp.status_code} - {resp.text}")
+                return None
+
+    except Exception as e:
+        logger.error(f"❌ خطأ غير متوقع أثناء تجديد التوكن للمتجر {store_id}: {str(e)}")
+        return None
+
 
 async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
     """جلب بيانات الطلب من سلة باستخدام PostgreSQL لجلب التوكن"""
