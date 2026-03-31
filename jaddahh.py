@@ -36,7 +36,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse 
 templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
-logger = logging.getLogger(jaddahh)
 # تعريف المتغيرات كـ None في البداية
 playwright_manager = None
 browser_instance = None
