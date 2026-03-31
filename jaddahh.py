@@ -278,15 +278,19 @@ async def ensure_browser_ready(store_id: str):
 async def save_session_to_db(store_id: str):
     try:
         path = os.path.join(SESSION_PATH, f"session_{store_id}")
-        if not os.path.exists(path): return
+        if not os.path.exists(path) or not os.listdir(path): 
+            logger.warning(f"⚠️ مجلد الجلسة فارغ أو غير موجود للمتجر {store_id}")
+            return
 
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-            tar.add(path, arcname=os.path.basename(path))
+            # إضافة محتويات المجلد مباشرة بدون إضافة المجلد نفسه لتجنب التداخل
+            for item in os.listdir(path):
+                tar.add(os.path.join(path, item), arcname=item)
         
         b64_session = base64.b64encode(buffer.getvalue()).decode()
         
-        # استخدام UPSERT في PostgreSQL (ON CONFLICT)
+        # تأكد أن store_id هو المفتاح الأساسي في الجدول
         query = """
             INSERT INTO store_sessions (store_id, session_data, updated_at)
             VALUES (:sid, :data, NOW())
@@ -294,7 +298,7 @@ async def save_session_to_db(store_id: str):
             DO UPDATE SET session_data = EXCLUDED.session_data, updated_at = NOW()
         """
         execute_db_query(query, {"sid": store_id, "data": b64_session})
-        logger.info(f"✅ تم حفظ جلسة المتجر {store_id} عبر PostgreSQL.")
+        logger.info(f"✅ تم حفظ جلسة المتجر {store_id} بنجاح.")
     except Exception as e:
         logger.error(f"❌ خطأ أثناء حفظ الجلسة: {e}")
 
