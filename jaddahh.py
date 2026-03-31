@@ -1544,73 +1544,58 @@ async def get_whatsapp_qr(store_id: str):
         if not page: 
             return {"status": "error", "message": "فشل فتح المتصفح"}
 
-        # 3. تحديث الصفحة (نستخدم 'load' لضمان تحميل سكريبتات واتساب بالكامل)
-        await page.reload(wait_until="load") 
+        # 3. إعطاء واتساب وقت كافٍ للتحميل (بدون reload مكثف)
         logger.info(f"⏳ جاري استخراج بيانات QR للمتجر {store_id}...")
         
-        # 4. فحص استباقي: هل هو متصل بالفعل؟
+        # الانتظار حتى ظهور عنصر الباركود (data-ref) بمهلة أطول (60 ثانية)
         try:
+            # تحديث: البحث عن الحاوية التي تحمل data-ref بدلاً من الـ canvas فقط
+            await page.wait_for_selector("div[data-ref]", timeout=60000)
+        except:
+            # فحص إضافي: هل هو متصل بالفعل؟
             if await page.query_selector("div[data-testid='chat-list']"):
                 return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
-        except:
-            pass
+            return {"status": "error", "message": "انتهت المهلة، تأكد من سرعة الإنترنت"}
 
-        try:
-            # 5. الانتظار حتى يظهر الـ Canvas (المؤشر البصري الأكيد لوجود الكود)
-            canvas_selector = "canvas"
-            await page.wait_for_selector(canvas_selector, timeout=40000)
+        # 4. استخراج النص (data-ref) بدقة أكبر
+        qr_text = await page.evaluate('''() => {
+            const el = document.querySelector('div[data-ref]');
+            return el ? el.getAttribute('data-ref') : null;
+        }''')
             
-            # إعطاء واتساب ثانيتين إضافيتين لضمان حقن الـ data-ref في الكود
-            await page.wait_for_timeout(2000) 
+        if qr_text:
+            # --- الخطة أ: التوليد البرمجي (الخيار الأفضل) ---
+            logger.info("✅ تم العثور على النص، جاري التوليد...")
+            qr = qrcode.QRCode(version=1, box_size=10, border=2)
+            qr.add_data(qr_text)
+            qr.make(fit=True)
             
-            # 6. استخراج النص (data-ref) بذكاء باستخدام JavaScript
-            # هذه الطريقة تبحث عن الـ data-ref في الـ canvas أو في العناصر المحيطة به
-            qr_text = await page.evaluate('''() => {
-                const canvas = document.querySelector('canvas');
-                if (!canvas) return null;
-                
-                // البحث في العنصر الأب
-                const parent = canvas.closest('div[data-ref]');
-                if (parent) return parent.getAttribute('data-ref');
-                
-                // البحث في نفس العنصر
-                if (canvas.hasAttribute('data-ref')) return canvas.getAttribute('data-ref');
-                
-                return null;
-            }''')
+            img = qr.make_image(fill_color="black", back_color="white")
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
             
-            if qr_text:
-                # --- الخطة أ: التوليد البرمجي (الأفضل والأوضح) ---
-                logger.info("✅ تم العثور على النص، جاري التوليد برمجياً...")
-                qr = qrcode.QRCode(version=1, box_size=10, border=2)
-                qr.add_data(qr_text)
-                qr.make(fit=True)
-                
-                img = qr.make_image(fill_color="black", back_color="white")
-                buffered = BytesIO()
-                img.save(buffered, format="PNG")
-                img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-                
-            else:
-                # --- الخطة ب: لقطة الشاشة كحل طوارئ (Fallback) ---
-                logger.warning("⚠️ لم يتم العثور على data-ref، سيتم التقاط صورة للكود كبديل.")
-                qr_element = await page.query_selector(canvas_selector)
-                img_bytes = await qr_element.screenshot(type="png")
-                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-
             return {
                 "status": "ready",
                 "qr_code": f"data:image/png;base64,{img_base64}",
                 "message": "قم بمسح الكود الآن"
             }
                 
-        except Exception as wait_err:
-            # 7. فحص أخير إذا تم الاتصال أثناء الانتظار
-            if await page.query_selector("div[data-testid='chat-list']"):
-                return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
+        else:
+            # --- الخطة ب: لقطة الشاشة (كحل أخير) ---
+            logger.warning("⚠️ تعذر استخراج النص، محاولة التقاط صورة...")
+            # البحث عن عنصر الـ canvas الذي يحتوي الكود
+            canvas = await page.query_selector("canvas")
+            if canvas:
+                img_bytes = await canvas.screenshot(type="png")
+                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                return {
+                    "status": "ready",
+                    "qr_code": f"data:image/png;base64,{img_base64}",
+                    "message": "قم بمسح الكود الآن (دقة منخفضة)"
+                }
             
-            logger.warning(f"⚠️ فشل في العثور على الكود: {wait_err}")
-            return {"status": "error", "message": "انتهت المهلة، تأكد من سرعة الإنترنت وحاول مجدداً"}
+            return {"status": "error", "message": "فشل توليد الباركود"}
 
     except Exception as e:
         logger.error(f"❌ QR Error: {e}")
