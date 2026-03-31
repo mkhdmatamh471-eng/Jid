@@ -910,6 +910,12 @@ async def check_abandoned_carts_and_remind(store_id: str):
     try:
         # 1. جلب بيانات السلال المتروكة من سلة (باستخدام الدالة الموحدة المحدثة)
         carts_data = await salla_request("GET", "abandoned-carts", store_id)
+
+  # --- اضفه هنا لترى الرد الكامل من سلة في Terminal ---
+        print(f"\n--- DEBUG: Salla API Response for Store {store_id} ---")
+        print(carts_data) 
+        print("---------------------------------------------------\n")
+
         if not carts_data or "data" not in carts_data:
             logger.info(f"Empty abandoned carts for store {store_id}")
             return
@@ -957,7 +963,6 @@ async def check_abandoned_carts_and_remind(store_id: str):
 
     except Exception as e:
         logger.error(f"❌ خطأ في دالة السلال المتروكة للمتجر {store_id}: {e}")
-
 
 async def cron_scheduler():
     """مهمة تعمل في الخلفية كل ساعة لفحص السلال المتروكة"""
