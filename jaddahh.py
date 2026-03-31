@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timedelta
 import logging
+from urllib.parse import quote
 from fastapi.responses import HTMLResponse
 import psycopg2  
 from psycopg2.extras import RealDictCursor
