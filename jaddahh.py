@@ -161,8 +161,18 @@ async def whatsapp_worker():
 # لا تنسى تشغيل العامل عند بدء تشغيل FastAPI
 @app.on_event("startup")
 async def startup_event():
+    # 1. تشغيل العامل في الخلفية
     asyncio.create_task(whatsapp_worker())
-
+    
+    # 2. إرسال رسالة اختبار بعد 10 ثوانٍ من التشغيل لضمان استقرار المتصفح
+    async def send_test():
+        await asyncio.sleep(10)
+        # ملاحظة: تأكد من إزالة الـ + من الرقم إذا كانت دالة send_via_web_bridge تنظف الرقم تلقائياً
+        test_phone = "966566187430" 
+        logger.info(f"🧪 جاري ضخ رسالة اختبار للرقم {test_phone}...")
+        await message_queue.put(("1867788552", test_phone, "🚀 رسالة تجربة: محرك البوت يعمل وجاهز للرد!"))
+    
+    asyncio.create_task(send_test())
 
 # تشغيل العامل عند بدء التطبيق
 
