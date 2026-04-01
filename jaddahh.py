@@ -322,10 +322,14 @@ async def load_session_from_db(store_id: str):
         compressed_data = base64.b64decode(b64_data)
         
         # 4. فك الضغط في المسار المخصص (SESSION_PATH)
+        # 4. فك الضغط في المسار المخصص لكل متجر لضمان رؤية Playwright للملفات
+        store_path = os.path.join(SESSION_PATH, f"session_{store_id}")
+        os.makedirs(store_path, exist_ok=True)
+        
         buffer = io.BytesIO(compressed_data)
         with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
-            tar.extractall(path=SESSION_PATH)
-        
+            tar.extractall(path=store_path)
+
         logger.info(f"📂 تم استعادة جلسة المتجر {store_id} بنجاح من PostgreSQL.")
         return True
 
