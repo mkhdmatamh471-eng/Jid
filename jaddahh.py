@@ -2,8 +2,8 @@ import os
 import hmac
 import hashlib
 import tarfile
-import base64
 import qrcode
+import shutil
 import base64
 from io import BytesIO
 import json
@@ -188,6 +188,15 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 # تحديد مسار حفظ بيانات الجلسة (سيتم إنشاء مجلد في نفس مسار السكربت)
 
 
+
+def clear_local_sessions():
+    """مسح المجلدات المؤقتة لتفريغ مساحة القرص في Render"""
+    if os.path.exists(SESSION_PATH):
+        shutil.rmtree(SESSION_PATH)
+        os.makedirs(SESSION_PATH)
+        logger.info("🧹 تم تصفير المجلدات المؤقتة بنجاح!")
+
+# استدعِ الدالة قبل البدء بطلب باركود جديد
 
 
 async def get_handler_for_store(store_id: str):
