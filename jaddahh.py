@@ -191,12 +191,9 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 async def get_handler_for_store(store_id: str):
-    """
-    الدالة المركزية: تم تصحيح مكان المراقب لضمان حفظ الجلسة في Supabase فور المسح.
-    """
     global playwright_manager, pages, contexts
     
-    # 1. التحقق من الصفحة النشطة
+    # 1. التحقق من الصفحة النشطة (تجنب فتح متصفحات متعددة لنفس المتجر)
     if store_id in pages and not pages[store_id].is_closed():
         try:
             await pages[store_id].evaluate("1+1")
@@ -207,24 +204,23 @@ async def get_handler_for_store(store_id: str):
             pages.pop(store_id, None)
             contexts.pop(store_id, None)
 
+    # 2. إعداد المسارات
+    storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
     if not os.path.exists(SESSION_PATH): os.makedirs(SESSION_PATH, exist_ok=True)
 
     if playwright_manager is None:
         playwright_manager = await async_playwright().start()
-        logger.info("🚀 تم تشغيل محرك Playwright بنجاح")
+        logger.info("🚀 محرك Playwright جاهز")
 
-    # 4. محاولة استعادة الجلسة من Supabase
-    storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-    if not os.path.exists(storage_path):
-        logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من Supabase...")
-        success = await load_session_from_db(store_id) # استدعاء دالة الاستعادة التي تعتمد على session_data
-        if not success:
-            os.makedirs(storage_path, exist_ok=True)
-            logger.info(f"🆕 جلسة جديدة بالكامل للمتجر {store_id}")
+    # 3. استعادة الجلسة من Supabase قبل تشغيل المتصفح
+    if not os.path.exists(storage_path) or not os.listdir(storage_path):
+        logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من السحاب...")
+        # تأكد أن load_session_from_db تستخدم التعديل الخاص بـ store_path
+        await load_session_from_db(store_id)
 
-    # 5. تشغيل المتصفح
+    # 4. تشغيل المتصفح بصلاحيات كاملة
     try:
-        logger.info(f"🌐 فتح متصفح المتجر: {store_id}")
+        logger.info(f"🌐 تشغيل متصفح المتجر: {store_id}")
         context = await playwright_manager.chromium.launch_persistent_context(
             user_data_dir=storage_path,
             headless=True,
@@ -234,35 +230,47 @@ async def get_handler_for_store(store_id: str):
         )
         
         page = context.pages[0] if context.pages else await context.new_page()
+        
+        # تحسين سرعة التحميل عبر حجب الموارد غير الضرورية
         await page.route("**/*", block_useless_resources)
 
         if "web.whatsapp.com" not in page.url:
-            await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
+            await page.goto("https://web.whatsapp.com", wait_until="networkidle", timeout=90000)
         
-        await setup_inbound_observer(page, store_id)
-
         pages[store_id] = page
         contexts[store_id] = context
 
-        # --- التصحيح هنا: مراقب تسجيل الدخول داخل الـ try لضمان التنفيذ ---
+        # --- [التصحيح الجوهري] مراقب الاستشعار المستمر ---
         async def monitor_and_save():
             try:
-                # الانتظار حتى ينجح المسح (ظهور قائمة الدردشات)
-                await page.wait_for_selector("div[data-testid='chat-list']", timeout=300000)
-                logger.info(f"✨ نجاح تسجيل الدخول! جاري رفع الجلسة للمتجر {store_id} إلى Supabase...")
-                # دالة تضغط المجلد وترفعه لعمود session_data في قاعدة البيانات
-                await save_session_to_db(store_id) 
+                logger.info(f"📡 مراقب الاستشعار نشط الآن للمتجر {store_id}...")
+                
+                # الانتظار حتى ظهور واجهة الدردشات (دليل قاطع على نجاح المسح)
+                # رفعنا المهلة لـ 10 دقائق لتعطي التاجر وقتاً كافياً للمسح
+                await page.wait_for_selector("div[data-testid='chat-list']", timeout=600000)
+                
+                logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
+                
+                # انتظار استقرار الملفات على القرص (ضروري قبل الضغط)
+                await asyncio.sleep(15)
+                
+                # استدعاء دالة الحفظ التي تضغط المجلد وترفعه لعمود session_data
+                await save_session_to_db(store_id)
+                
+                # إعداد المراقب الداخلي للرسائل الواردة بعد النجاح
+                await setup_inbound_observer(page, store_id)
+                
             except Exception as e:
-                logger.warning(f"⚠️ تنبيه: لم يتم تحديث الجلسة في القاعدة (ربما لم يتم المسح): {e}")
+                logger.warning(f"⚠️ انتهت مهلة الاستشعار أو تم إغلاق المتصفح للمتجر {store_id}: {e}")
 
-        # تشغيل المهمة في الخلفية فوراً
+        # تشغيل المراقب كـ Task مستقل في الخلفية
         asyncio.create_task(monitor_and_save())
 
-        logger.info(f"✅ صفحة المتجر {store_id} جاهزة للاستخدام.")
+        logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
         return page
 
     except Exception as e:
-        logger.error(f"❌ خطأ كارثي في تشغيل المتجر {store_id}: {e}")
+        logger.error(f"❌ خطأ في تشغيل المتجر {store_id}: {e}")
         return None
 
 # ========================================================
