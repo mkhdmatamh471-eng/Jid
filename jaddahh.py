@@ -10,6 +10,8 @@ import json
 import logging
 import asyncio
 import random
+import tempfile
+import time
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from playwright.async_api import async_playwright
@@ -199,6 +201,25 @@ def clear_local_sessions():
 # استدعِ الدالة قبل البدء بطلب باركود جديد
 
 
+
+
+# 🚦 التحكم في تدفق الموارد لحماية الرام في Render
+# نضبطه على 1 لضمان عدم انهيار السيرفر نهائياً (يسمح بفتح متصفح واحد فقط في نفس اللحظة للربط)
+MAX_CONCURRENT_BROWSERS = 1 
+memory_semaphore = asyncio.Semaphore(MAX_CONCURRENT_BROWSERS)
+
+async def cleanup_store_resources(store_id: str):
+    """دالة مساعدة لإغلاق موارد المتجر وتحرير الرام بالكامل"""
+    global pages, contexts
+    try:
+        if store_id in contexts:
+            await contexts[store_id].close()
+        pages.pop(store_id, None)
+        contexts.pop(store_id, None)
+        logger.info(f"♻️ تم إغلاق متصفح المتجر {store_id} وتحرير الذاكرة بنجاح.")
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء تنظيف موارد المتجر {store_id}: {e}")
+
 async def get_handler_for_store(store_id: str):
     global playwright_manager, pages, contexts
     
@@ -210,103 +231,110 @@ async def get_handler_for_store(store_id: str):
             return pages[store_id]
         except Exception:
             logger.warning(f"🔄 إعادة تهيئة صفحة المتجر {store_id}...")
-            if store_id in contexts: 
-                try: await contexts[store_id].close()
-                except: pass
-            pages.pop(store_id, None)
-            contexts.pop(store_id, None)
+            await cleanup_store_resources(store_id)
 
-    # 2. إعداد المسارات المحلية للجلسة
-    storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-    os.makedirs(SESSION_PATH, exist_ok=True)
-
-    # تشغيل محرك Playwright إذا لم يكن يعمل
-    if playwright_manager is None:
-        playwright_manager = await async_playwright().start()
-        logger.info("🚀 محرك Playwright جاهز")
-
-    # 3. استعادة الجلسة من Supabase (السحاب) إذا لم تكن موجودة محلياً
-    if not os.path.exists(storage_path) or not os.listdir(storage_path):
-        logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من السحاب...")
-        await load_session_from_db(store_id)
-
-    # 4. تشغيل المتصفح بإعدادات "الصمود" ضد ضعف الإنترنت
-    try:
-        logger.info(f"🌐 تشغيل متصفح المتجر: {store_id}")
-        context = await playwright_manager.chromium.launch_persistent_context(
-            user_data_dir=storage_path,
-            headless=True,
-            # أعلام (Flags) لتقليل استهلاك الرام والمعالج (CPU)
-            args=[
-                "--no-sandbox", 
-                "--disable-setuid-sandbox", 
-                "--disable-dev-shm-usage", 
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--single-process"
-            ],
-            viewport={'width': 800, 'height': 600},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            timeout=120000 # دقيقتين لتشغيل المتصفح نفسه
-        )
+    # 2. حماية الذاكرة - الدخول في الطابور إذا كان هناك ضغط على السيرفر
+    async with memory_semaphore:
+        logger.info(f"🚦 دور المتجر {store_id} في المعالجة الآن (تم السماح بالمرور)...")
         
-        page = context.pages[0] if context.pages else await context.new_page()
-        
-        # إعداد مهلات افتراضية طويلة جداً لكل العمليات (حرجة جداً للإنترنت الضعيف)
-        page.set_default_navigation_timeout(150000) # دقيقتين ونصف
-        page.set_default_timeout(150000)
+        # إعداد المسارات المحلية للجلسة
+        storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
+        os.makedirs(SESSION_PATH, exist_ok=True)
 
-        # حجب الصور والموارد غير الضرورية لتوفير البيانات والسرعة
-        await page.route("**/*", block_useless_resources)
+        # تشغيل محرك Playwright إذا لم يكن يعمل
+        if playwright_manager is None:
+            playwright_manager = await async_playwright().start()
+            logger.info("🚀 محرك Playwright جاهز")
 
-        # الانتقال لموقع واتساب ويب
-        if "web.whatsapp.com" not in page.url:
-            try:
-                # ننتظر فقط حتى يتم تحميل هيكل الصفحة (domcontentloaded)
-                await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=120000)
-            except Exception as e:
-                logger.warning(f"⚠️ محاولة إعادة تحميل الصفحة للمتجر {store_id} بسبب بطء الشبكة...")
-                await page.reload(wait_until="domcontentloaded")
-        
-        pages[store_id] = page
-        contexts[store_id] = context
+        # 3. استعادة الجلسة من Supabase (السحاب) إذا لم تكن موجودة محلياً
+        if not os.path.exists(storage_path) or not os.listdir(storage_path):
+            logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من السحاب...")
+            await load_session_from_db(store_id)
 
-        # --- 📡 مراقب الاستشعار المطور (Monitor & Save) ---
-        async def monitor_and_save():
-            try:
-                logger.info(f"📡 مراقب الاستشعار نشط (المهلة: 15 دقيقة) للمتجر {store_id}...")
-                
-                # الانتظار حتى ظهور واجهة الدردشات (دليل قاطع على نجاح المسح)
-                # رفعنا المهلة لـ 15 دقيقة لتعويض بطء المزامنة في الشبكات الضعيفة
-                await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000)
-                
-                logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
-                
-                # 1. انتظار استقرار الملفات (30 ثانية) ضروري قبل ضغط المجلد
-                await asyncio.sleep(30)
-                
-                # 2. حفظ الجلسة سحابياً (تحديث Supabase)
-                await save_session_to_db(store_id)
-                
-                # 3. إرسال إشعار النجاح على الواتساب (اختياري)
-                await send_connection_success_msg(page, store_id)
-                
-                # 4. إعداد مراقب الرسائل الواردة لربط الذكاء الاصطناعي (Groq)
-                await setup_inbound_observer(page, store_id)
-                
-            except Exception as e:
-                logger.warning(f"⚠️ توقف مراقب المتجر {store_id} أو انتهت المهلة: {e}")
+        # 4. تشغيل المتصفح بإعدادات "الصمود" والتوفير الأقصى للموارد
+        try:
+            # 🧹 تنظيف ملفات النظام المؤقتة قبل التشغيل لتوفير مساحة القرص في Render
+            shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
 
-        # تشغيل المراقب كمهمة خلفية (Background Task) لضمان عدم حجب واجهة المستخدم
-        asyncio.create_task(monitor_and_save())
+            logger.info(f"🌐 تشغيل متصفح المتجر: {store_id}")
+            context = await playwright_manager.chromium.launch_persistent_context(
+                user_data_dir=storage_path,
+                headless=True,
+                # أعلام (Flags) لتقليل استهلاك الرام والمعالج (CPU) لأقصى حد
+                args=[
+                    "--no-sandbox", 
+                    "--disable-setuid-sandbox", 
+                    "--disable-dev-shm-usage", 
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--single-process", # توفير ضخم في الرام
+                    "--js-flags='--max-old-space-size=256'" # منع الجافاسكربت من استهلاك أكثر من 256 ميجا
+                ],
+                viewport={'width': 800, 'height': 600},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                timeout=120000 # دقيقتين لتشغيل المتصفح نفسه
+            )
+            
+            page = context.pages[0] if context.pages else await context.new_page()
+            
+            # إعداد مهلات افتراضية طويلة جداً لكل العمليات (حرجة جداً للإنترنت الضعيف)
+            page.set_default_navigation_timeout(150000) # دقيقتين ونصف
+            page.set_default_timeout(150000)
 
-        logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
-        return page
+            # حجب الصور والموارد غير الضرورية لتوفير البيانات والسرعة
+            await page.route("**/*", block_useless_resources)
 
-    except Exception as e:
-        logger.error(f"❌ خطأ حرج في تشغيل المتجر {store_id}: {e}")
-        return None
+            # الانتقال لموقع واتساب ويب
+            if "web.whatsapp.com" not in page.url:
+                try:
+                    # ننتظر فقط حتى يتم تحميل هيكل الصفحة (domcontentloaded)
+                    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=120000)
+                except Exception as e:
+                    logger.warning(f"⚠️ محاولة إعادة تحميل الصفحة للمتجر {store_id} بسبب بطء الشبكة...")
+                    await page.reload(wait_until="domcontentloaded")
+            
+            pages[store_id] = page
+            contexts[store_id] = context
 
+            # --- 📡 مراقب الاستشعار المطور مع نظام الإغلاق الذاتي ---
+            async def monitor_save_and_close():
+                try:
+                    logger.info(f"📡 مراقب الاستشعار نشط (المهلة: 15 دقيقة) للمتجر {store_id}...")
+                    
+                    # الانتظار حتى ظهور واجهة الدردشات (دليل قاطع على نجاح المسح)
+                    await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000)
+                    
+                    logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
+                    
+                    # 1. انتظار استقرار الملفات (30 ثانية) ضروري قبل ضغط المجلد
+                    await asyncio.sleep(30)
+                    
+                    # 2. حفظ الجلسة سحابياً (تحديث Supabase)
+                    await save_session_to_db(store_id)
+                    
+                    # 3. إرسال إشعار النجاح على الواتساب
+                    await send_connection_success_msg(page, store_id)
+                    
+                    # 4. إعداد مراقب الرسائل الواردة لربط الذكاء الاصطناعي (Groq)
+                    await setup_inbound_observer(page, store_id)
+
+                    # 5. 💡 مؤقت الإغلاق الذاتي: إغلاق المتصفح بعد 5 دقائق من النجاح لتحرير الرام
+                    logger.info(f"⏲️ سيعمل المتجر {store_id} الآن، وسيتم تحرير ذاكرته خلال 5 دقائق...")
+                    await asyncio.sleep(300) 
+                    await cleanup_store_resources(store_id)
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ توقف مراقب المتجر {store_id} أو انتهت المهلة: {e}")
+
+            # تشغيل المراقب كمهمة خلفية لضمان عدم حجب واجهة المستخدم وتحرير الـ Semaphore
+            asyncio.create_task(monitor_save_and_close())
+
+            logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
+            return page
+
+        except Exception as e:
+            logger.error(f"❌ خطأ حرج في تشغيل المتجر {store_id}: {e}")
+            return None
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
