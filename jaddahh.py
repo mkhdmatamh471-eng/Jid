@@ -193,7 +193,7 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 async def get_handler_for_store(store_id: str):
     global playwright_manager, pages, contexts
     
-    # 1. التحقق من الصفحة النشطة (تجنب فتح متصفحات متعددة لنفس المتجر)
+    # 1. التحقق من الصفحة النشطة (تجنب التكرار)
     if store_id in pages and not pages[store_id].is_closed():
         try:
             await pages[store_id].evaluate("1+1")
@@ -212,13 +212,12 @@ async def get_handler_for_store(store_id: str):
         playwright_manager = await async_playwright().start()
         logger.info("🚀 محرك Playwright جاهز")
 
-    # 3. استعادة الجلسة من Supabase قبل تشغيل المتصفح
+    # 3. استعادة الجلسة من السحاب (Supabase) قبل تشغيل المتصفح
     if not os.path.exists(storage_path) or not os.listdir(storage_path):
         logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من السحاب...")
-        # تأكد أن load_session_from_db تستخدم التعديل الخاص بـ store_path
         await load_session_from_db(store_id)
 
-    # 4. تشغيل المتصفح بصلاحيات كاملة
+    # 4. تشغيل المتصفح
     try:
         logger.info(f"🌐 تشغيل متصفح المتجر: {store_id}")
         context = await playwright_manager.chromium.launch_persistent_context(
@@ -230,8 +229,6 @@ async def get_handler_for_store(store_id: str):
         )
         
         page = context.pages[0] if context.pages else await context.new_page()
-        
-        # تحسين سرعة التحميل عبر حجب الموارد غير الضرورية
         await page.route("**/*", block_useless_resources)
 
         if "web.whatsapp.com" not in page.url:
@@ -240,30 +237,32 @@ async def get_handler_for_store(store_id: str):
         pages[store_id] = page
         contexts[store_id] = context
 
-        # --- [التصحيح الجوهري] مراقب الاستشعار المستمر ---
+        # --- [التصحيح النهائي] مراقب الاستشعار + الحفظ + رسالة النجاح ---
         async def monitor_and_save():
             try:
                 logger.info(f"📡 مراقب الاستشعار نشط الآن للمتجر {store_id}...")
                 
-                # الانتظار حتى ظهور واجهة الدردشات (دليل قاطع على نجاح المسح)
-                # رفعنا المهلة لـ 10 دقائق لتعطي التاجر وقتاً كافياً للمسح
+                # الانتظار حتى ظهور واجهة الدردشات (نجاح المسح)
                 await page.wait_for_selector("div[data-testid='chat-list']", timeout=600000)
                 
                 logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
                 
-                # انتظار استقرار الملفات على القرص (ضروري قبل الضغط)
+                # 1. مهلة لاستقرار ملفات الجلسة (مهم جداً قبل الضغط)
                 await asyncio.sleep(15)
                 
-                # استدعاء دالة الحفظ التي تضغط المجلد وترفعه لعمود session_data
+                # 2. الحفظ في Supabase (ضغط ورفع Base64 إلى حقل session_data)
                 await save_session_to_db(store_id)
                 
-                # إعداد المراقب الداخلي للرسائل الواردة بعد النجاح
+                # 3. إرسال رسالة "نجاح الربط" لجوالك
+                await send_connection_success_msg(page, store_id)
+                
+                # 4. إعداد مراقب الرسائل الواردة
                 await setup_inbound_observer(page, store_id)
                 
             except Exception as e:
-                logger.warning(f"⚠️ انتهت مهلة الاستشعار أو تم إغلاق المتصفح للمتجر {store_id}: {e}")
+                logger.warning(f"⚠️ توقف مراقب المتجر {store_id}: {e}")
 
-        # تشغيل المراقب كـ Task مستقل في الخلفية
+        # تشغيل المراقب في الخلفية ليعمل بشكل مستقل عن دالة الـ QR
         asyncio.create_task(monitor_and_save())
 
         logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
