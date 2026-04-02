@@ -1757,7 +1757,7 @@ async def get_whatsapp_qr(store_id: str):
         logger.info(f"📸 محاولة استخراج الباركود للمتجر {store_id}...")
         try:
             # الانتظار حتى 45 ثانية لاستيعاب بطء Render أحياناً
-            await page.wait_for_selector("div[data-ref], canvas, div[data-testid='qrcode']", timeout=45000)
+            await page.wait_for_selector("div[data-ref], canvas, div[data-testid='qrcode']", timeout=200000)
         except Exception:
             # فحص أخير قبل الاستسلام: هل دخل للدردشة فجأة؟
             if await page.query_selector("div[data-testid='chat-list']"):
