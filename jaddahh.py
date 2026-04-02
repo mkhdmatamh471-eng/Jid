@@ -1704,6 +1704,8 @@ async def start_monitoring_after_qr(page, store_id: str):
         else:
             logger.error(f"❌ خطأ غير متوقع في مراقب المتجر {store_id}: {e}")
 
+/* --- PRESERVE_INDENTATION: 4_SPACES --- */
+
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     try:
@@ -1713,43 +1715,54 @@ async def get_whatsapp_qr(store_id: str):
         if not row: 
             return {"status": "error", "message": "المتجر غير مسجل"}
 
-        # 2. الحصول على الصفحة (Playwright) - الآن أصبحت سريعة بدون مراقب داخلي
+        # 2. الحصول على الصفحة
         page = await get_handler_for_store(store_id)
         if not page: 
             return {"status": "error", "message": "السيرفر مجهد، فشل فتح المتصفح"}
 
-        # إعداد مهلة انتظار للعمليات الداخلية
-        page.set_default_timeout(100000) 
-
         logger.info(f"⏳ جاري فحص حالة واتساب للمتجر {store_id}...")
-        
-        # 3. فحص ذكي: هل دخلنا فعلاً؟ (توفير وقت)
-        if await page.query_selector("div[data-testid='chat-list']"):
+
+        # --- 🚀 التعديل الجوهري هنا: فحص سريع جداً للحالة ---
+        try:
+            # نحاول العثور على (إما صندوق الدردشة أو حاوية الباركود) في غضون 15 ثانية فقط
+            # هذا يمنع التعليق اللانهائي إذا تجمد المتصفح
+            state = await page.evaluate('''() => {
+                if (document.querySelector("div[data-testid='chat-list']")) return "connected";
+                if (document.querySelector("div[data-ref]")) return "qr_ready";
+                if (document.querySelector("canvas")) return "qr_ready";
+                return "loading";
+            }''')
+        except Exception as e:
+            logger.error(f"⚠️ المتصفح لا يستجيب للفحص السريع: {e}")
+            state = "error"
+
+        # 3. اتخاذ قرار بناءً على الحالة
+        if state == "connected":
             return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
 
-        # 4. محاولة استخراج الباركود (الصبر على الشبكة الضعيفة)
+        if state == "error":
+            return {"status": "error", "message": "المتصفح متوقف، جرب تحديث الصفحة"}
+
+        # 4. إذا لم يكن متصلاً، ننتظر الباركود بمهلة محددة
+        logger.info(f"📸 محاولة استخراج الباركود للمتجر {store_id}...")
         try:
-            # ننتظر ظهور الحاوية بمهلة 90 ثانية لتعويض بطء التحميل في Render
-            await page.wait_for_selector("div[data-ref]", timeout=90000)
-        except:
+            # ننتظر ظهور الباركود بحد أقصى 45 ثانية (مناسب لـ Render)
+            await page.wait_for_selector("div[data-ref], canvas", timeout=45000)
+        except Exception:
+            # فحص أخير: ربما اتصل أثناء الانتظار؟
             if await page.query_selector("div[data-testid='chat-list']"):
                 return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
-            return {"status": "error", "message": "الإنترنت ضعيف جداً، فشل تحميل الباركود"}
+            return {"status": "error", "message": "تأخر تحميل الباركود، أعد المحاولة"}
 
-        # 5. استخراج نص الـ QR
+        # 5. استخراج نص الـ QR (بنفس منطقك السابق)
         qr_text = await page.evaluate('''() => {
             const el = document.querySelector('div[data-ref]');
             return el ? el.getAttribute('data-ref') : null;
         }''')
             
         if qr_text:
-            logger.info(f"✅ تم استخراج النص بنجاح للمتجر {store_id}")
-            
-            # --- 🚀 الجزء الجديد: إطلاق المراقب في الخلفية فور استخراج الكود ---
-            # هذا يضمن بدء مراقبة "نجاح المسح" دون حجب الـ Response الحالي
             asyncio.create_task(start_monitoring_after_qr(page, store_id))
-            # -------------------------------------------------------------
-
+            
             qr = qrcode.QRCode(version=1, box_size=10, border=2)
             qr.add_data(qr_text)
             qr.make(fit=True)
@@ -1762,34 +1775,26 @@ async def get_whatsapp_qr(store_id: str):
             return {
                 "status": "ready", 
                 "qr_code": f"data:image/png;base64,{img_base64}",
-                "message": "استعد للمسح، الكود جاهز والمراقبة بدأت"
+                "message": "استعد للمسح، الكود جاهز"
             }
                 
-        else:
-            # الخطة ب: لقطة الشاشة في حال فشل النص
-            logger.warning("⚠️ نص الـ QR مفقود، جاري التقاط لقطة شاشة...")
-            canvas = await page.query_selector("canvas")
-            if canvas:
-                await asyncio.sleep(2)
-                img_bytes = await canvas.screenshot(type="png")
-                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-                
-                # إطلاق المراقب أيضاً في حالة لقطة الشاشة
-                asyncio.create_task(start_monitoring_after_qr(page, store_id))
-                
-                return {
-                    "status": "ready",
-                    "qr_code": f"data:image/png;base64,{img_base64}",
-                    "message": "امسح الكود من الصورة مباشرة"
-                }
+        # الخطة ب: لقطة الشاشة
+        canvas = await page.query_selector("canvas")
+        if canvas:
+            img_bytes = await canvas.screenshot(type="png")
+            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+            asyncio.create_task(start_monitoring_after_qr(page, store_id))
+            return {
+                "status": "ready",
+                "qr_code": f"data:image/png;base64,{img_base64}",
+                "message": "امسح الكود من الصورة"
+            }
             
-            return {"status": "error", "message": "تعذر العثور على الباركود، جرب تحديث الصفحة"}
+        return {"status": "error", "message": "تعذر العثور على الباركود"}
 
     except Exception as e:
         logger.error(f"❌ خطأ QR حرج: {e}")
-        if "Timeout" in str(e):
-            return {"status": "error", "message": "السيرفر استغرق وقتاً طويلاً، حاول مرة أخرى"}
-        return {"status": "error", "message": "حدث خطأ غير متوقع"}
+        return {"status": "error", "message": "حدث خطأ فني في السيرفر"}
 
 async def send_whatsapp_message(store_id: str, phone: str, message: str):
     """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر"""
