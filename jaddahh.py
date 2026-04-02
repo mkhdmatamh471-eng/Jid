@@ -223,80 +223,76 @@ async def cleanup_store_resources(store_id: str):
 async def get_handler_for_store(store_id: str):
     global playwright_manager, pages, contexts
     
-    # 1. التحقق السريع: إذا كانت الصفحة جاهزة، أعدها فوراً دون دخول الطابور
+    # 1. التحقق السريع: إذا كان المتصفح يعمل، لا تدخل في طابور الانتظار
     if store_id in pages and not pages[store_id].is_closed():
         try:
-            # التحقق من أن الصفحة لا تزال مستجيبة
-            await pages[store_id].evaluate("1+1")
+            await pages[store_id].evaluate("1+1") # التأكد أن الصفحة مستجيبة
             return pages[store_id]
-        except:
-            logger.warning(f"🔄 إعادة تهيئة موارد المتجر {store_id}...")
+        except Exception:
+            logger.warning(f"🔄 المتصفح معلق للمتجر {store_id}، جاري إعادة التشغيل...")
             await cleanup_store_resources(store_id)
 
-    # 2. حماية الذاكرة - نظام الطابور
+    # 2. دخول طابور الذاكرة (Semaphore) لضمان عدم انهيار الرام
     async with memory_semaphore:
-        logger.info(f"🚦 دور المتجر {store_id} في المعالجة...")
-        
-        storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-        os.makedirs(SESSION_PATH, exist_ok=True)
-
-        if playwright_manager is None:
-            playwright_manager = await async_playwright().start()
-
-        if not os.path.exists(storage_path) or not os.listdir(storage_path):
-            await load_session_from_db(store_id)
-
         try:
-            # تنظيف ملفات temp لتوفير مساحة القرص
+            logger.info(f"🚦 دور المتجر {store_id} في المعالجة...")
+            
+            # التأكد من عمل محرك Playwright
+            if playwright_manager is None:
+                playwright_manager = await async_playwright().start()
+
+            storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
+            os.makedirs(storage_path, exist_ok=True)
+
+            # تحميل الجلسة من القاعدة إذا لم تكن موجودة محلياً
+            if not os.listdir(storage_path):
+                await load_session_from_db(store_id)
+
+            # تنظيف الملفات المؤقتة لتقليل استهلاك القرص
             shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
 
-            logger.info(f"🌐 تشغيل نسخة مخففة من Chromium للمتجر: {store_id}")
+            # تشغيل المتصفح (الإعدادات الاقتصادية لـ Render)
             context = await playwright_manager.chromium.launch_persistent_context(
                 user_data_dir=storage_path,
                 headless=True,
                 args=[
                     "--no-sandbox", 
                     "--disable-setuid-sandbox", 
-                    "--disable-dev-shm-usage", 
+                    "--disable-dev-shm-usage", # ضروري جداً لبيئة Docker/Render
                     "--disable-gpu",
-                    "--disable-software-rasterizer",
-                    "--single-process",
-                    "--disable-extensions", # تعطيل الإضافات لتوفير الرام
-                    "--disable-features=Translate,SharedArrayBuffer", # تعطيل ميزات غير ضرورية
-                    "--js-flags='--max-old-space-size=128'" # تقليل سقف الجافاسكريبت أكثر (128MB)
+                    "--single-process", 
+                    "--disable-extensions",
+                    "--js-flags='--max-old-space-size=128'"
                 ],
-                viewport={'width': 400, 'height': 300}, # أصغر حجم ممكن لتقليل ضغط الرسم
+                viewport={'width': 400, 'height': 300},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             )
             
             page = context.pages[0] if context.pages else await context.new_page()
-            
-            # ضبط مهلات ذكية
-            page.set_default_navigation_timeout(90000)
-            page.set_default_timeout(90000)
+            page.set_default_navigation_timeout(60000) # تقليل المهلة لـ 60 ثانية للفشل السريع
 
-            # حجب الموارد الثقيلة (الصور، الخطوط، الوسائط)
             await page.route("**/*", block_useless_resources)
 
-            # الانتقال لواتساب فقط إذا لم يكن محمل سابقاً
-            current_url = page.url
-            if "web.whatsapp.com" not in current_url:
+            # التوجه لواتساب
+            if "web.whatsapp.com" not in page.url:
                 try:
-                    logger.info(f"🚀 جاري تحميل واتساب ويب للمتجر {store_id}...")
-                    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
+                    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=60000)
                 except Exception as e:
-                    logger.warning(f"⚠️ بطء في التحميل، محاولة أخيرة للمتجر {store_id}")
+                    logger.warning(f"⚠️ محاولة ثانية لتحميل واتساب للمتجر {store_id}...")
                     await page.reload(wait_until="domcontentloaded")
             
+            # حفظ المراجع في القواميس العالمية
             pages[store_id] = page
             contexts[store_id] = context
 
-            logger.info(f"✅ المتصفح جاهز (Ultra-Light) للمتجر {store_id}.")
+            logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
             return page
 
-    except Exception as e:
-        logger.error(f"❌ خطأ حرج في المتجر {store_id}: {e}")
-        return None
+        except Exception as e:
+            # أهم تعديل: تنظيف الموارد فوراً عند حدوث خطأ داخل الطابور
+            logger.error(f"❌ خطأ حرج في تشغيل المتجر {store_id}: {e}")
+            await cleanup_store_resources(store_id)
+            return None
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
