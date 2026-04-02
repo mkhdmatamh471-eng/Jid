@@ -1767,6 +1767,54 @@ async def get_whatsapp_qr(store_id: str):
     except Exception as e:
         logger.error(f"❌ خطأ QR حرج للمتجر {store_id}: {e}")
         return {"status": "error", "message": "حدث خطأ فني أثناء تحضير الكود"}
+@app.get("/admin/link-phone/1867788552")
+async def link_my_phone():
+    store_id = "1867788552"
+    phone_number = "785022014" # رقمك بدون مقدمة دولية (سيتم اختيار اليمن من القائمة)
+    
+    try:
+        page = await get_handler_for_store(store_id)
+        if not page: return {"status": "error", "message": "فشل فتح المتصفح"}
+
+        # 1. الدخول لواتساب ويب
+        await page.goto("https://web.whatsapp.com", wait_until="networkidle")
+
+        # 2. النقر على "Link with phone number"
+        link_selector = "span[role='button']:has-text('Link with phone number')"
+        await page.wait_for_selector(link_selector, timeout=30000)
+        await page.click(link_selector)
+
+        # 3. اختيار الدولة (اليمن) وإدخال الرقم
+        # ملحوظة: واتساب يفتح قائمة الدول، سنقوم بإدخال الرقم مباشرة في الحقل
+        input_selector = "input[aria-label='Type your phone number.']"
+        await page.wait_for_selector(input_selector)
+        await page.fill(input_selector, phone_number)
+        
+        # 4. النقر على "Next" لتوليد الكود
+        await page.click("button:has-text('Next')")
+
+        # 5. استخراج الكود المكون من 8 رموز (مثال: A1B2-C3D4)
+        code_selector = "div[data-testid='pairing-code-cell']"
+        await page.wait_for_selector(code_selector, timeout=20000)
+        
+        pairing_code = await page.evaluate('''() => {
+            const spans = document.querySelectorAll("div[data-testid='pairing-code-cell'] span");
+            return Array.from(spans).map(s => s.innerText).join("");
+        }''')
+
+        if pairing_code:
+            # تشغيل المراقب لحفظ الكوكيز في Supabase فور نجاح الربط
+            asyncio.create_task(start_monitoring_after_qr(page, store_id))
+            
+            return {
+                "status": "success",
+                "pairing_code": pairing_code,
+                "instructions": "افتح واتساب في هاتفك > الأجهزة المرتبطة > ربط جهاز > الربط برقم الهاتف بدلاً من ذلك > أدخل الكود أعلاه."
+            }
+
+    except Exception as e:
+        logger.error(f"❌ خطأ في توليد كود الربط: {e}")
+        return {"status": "error", "message": "حدث خطأ، تأكد أن الصفحة لم تطلب باركود مسبقاً"}
 
 async def send_whatsapp_message(store_id: str, phone: str, message: str):
     """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر باستهلاك موارد منخفض"""
