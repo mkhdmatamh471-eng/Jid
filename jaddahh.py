@@ -223,33 +223,34 @@ async def cleanup_store_resources(store_id: str):
 async def get_handler_for_store(store_id: str):
     global playwright_manager, pages, contexts
     
-    # 1. التحقق من الصفحة النشطة (تجنب فتح متصفحات متعددة لنفس المتجر)
+    # 1. التحقق السريع: إذا كانت الصفحة جاهزة، أعدها فوراً دون دخول الطابور
     if store_id in pages and not pages[store_id].is_closed():
         try:
+            # التحقق من أن الصفحة لا تزال مستجيبة
             await pages[store_id].evaluate("1+1")
             return pages[store_id]
-        except Exception:
-            logger.warning(f"🔄 إعادة تهيئة صفحة المتجر {store_id}...")
+        except:
+            logger.warning(f"🔄 إعادة تهيئة موارد المتجر {store_id}...")
             await cleanup_store_resources(store_id)
 
-    # 2. حماية الذاكرة - الدخول في الطابور
+    # 2. حماية الذاكرة - نظام الطابور
     async with memory_semaphore:
-        logger.info(f"🚦 دور المتجر {store_id} في المعالجة الآن...")
+        logger.info(f"🚦 دور المتجر {store_id} في المعالجة...")
         
         storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
         os.makedirs(SESSION_PATH, exist_ok=True)
 
         if playwright_manager is None:
             playwright_manager = await async_playwright().start()
-            logger.info("🚀 محرك Playwright جاهز")
 
         if not os.path.exists(storage_path) or not os.listdir(storage_path):
             await load_session_from_db(store_id)
 
         try:
+            # تنظيف ملفات temp لتوفير مساحة القرص
             shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
 
-            logger.info(f"🌐 تشغيل متصفح المتجر: {store_id}")
+            logger.info(f"🌐 تشغيل نسخة مخففة من Chromium للمتجر: {store_id}")
             context = await playwright_manager.chromium.launch_persistent_context(
                 user_data_dir=storage_path,
                 headless=True,
@@ -260,35 +261,42 @@ async def get_handler_for_store(store_id: str):
                     "--disable-gpu",
                     "--disable-software-rasterizer",
                     "--single-process",
-                    "--js-flags='--max-old-space-size=256'"
+                    "--disable-extensions", # تعطيل الإضافات لتوفير الرام
+                    "--disable-features=Translate,SharedArrayBuffer", # تعطيل ميزات غير ضرورية
+                    "--js-flags='--max-old-space-size=128'" # تقليل سقف الجافاسكريبت أكثر (128MB)
                 ],
-                viewport={'width': 800, 'height': 600},
+                viewport={'width': 400, 'height': 300}, # أصغر حجم ممكن لتقليل ضغط الرسم
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                timeout=120000
             )
             
             page = context.pages[0] if context.pages else await context.new_page()
-            page.set_default_navigation_timeout(150000)
-            page.set_default_timeout(150000)
+            
+            # ضبط مهلات ذكية
+            page.set_default_navigation_timeout(90000)
+            page.set_default_timeout(90000)
+
+            # حجب الموارد الثقيلة (الصور، الخطوط، الوسائط)
             await page.route("**/*", block_useless_resources)
 
-            if "web.whatsapp.com" not in page.url:
+            # الانتقال لواتساب فقط إذا لم يكن محمل سابقاً
+            current_url = page.url
+            if "web.whatsapp.com" not in current_url:
                 try:
-                    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=120000)
+                    logger.info(f"🚀 جاري تحميل واتساب ويب للمتجر {store_id}...")
+                    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=90000)
                 except Exception as e:
-                    logger.warning(f"⚠️ محاولة إعادة تحميل الصفحة للمتجر {store_id} بسبب بطء الشبكة...")
+                    logger.warning(f"⚠️ بطء في التحميل، محاولة أخيرة للمتجر {store_id}")
                     await page.reload(wait_until="domcontentloaded")
             
             pages[store_id] = page
             contexts[store_id] = context
 
-            # 🛑 التعديل الرئيسي: لا يوجد مراقبة هنا، فقط نعيد الصفحة بسرعة
-            logger.info(f"✅ المتصفح جاهز للمتجر {store_id} (بدون مراقب خلفي).")
+            logger.info(f"✅ المتصفح جاهز (Ultra-Light) للمتجر {store_id}.")
             return page
 
-        except Exception as e:
-            logger.error(f"❌ خطأ حرج في تشغيل المتجر {store_id}: {e}")
-            return None
+    except Exception as e:
+        logger.error(f"❌ خطأ حرج في المتجر {store_id}: {e}")
+        return None
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
