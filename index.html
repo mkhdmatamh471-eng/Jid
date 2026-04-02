@@ -291,48 +291,85 @@
             console.error("Dashboard Sync Error:", error); 
         }
     }
+/* --- PRESERVE_INDENTATION: 8_SPACES_TOTAL --- */
 
     async function refreshQR() {
         const qrImage = document.getElementById('qr-image');
         const qrBox = document.getElementById('qr-box');
         
+        // تأمين الواجهة بصرياً
         qrBox.classList.add("animate-pulse");
         qrBox.style.opacity = "0.6";
-        qrImage.style.filter = "blur(3px)";
+        qrImage.style.filter = "blur(8px)";
         qrImage.classList.remove("scale-110", "scale-100");
 
-        try {
-            const response = await fetch(`/admin/get-qr/${storeId}`);
-            const data = await response.json();
-            
-            if (data.status === "ready" && data.qr_code) {
-                qrImage.src = data.qr_code;
-                Toastify({ text: "✅ كود جديد جاهز للمسح", backgroundColor: "#10b981" }).showToast();
-            } 
-            else if (data.status === "connected") {
-                qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
-                Toastify({ text: "📱 الواتساب متصل بالفعل ✅", backgroundColor: "#3b82f6" }).showToast();
-            } 
-            else {
+        // دالة داخلية للطلب لتسهيل إعادة المحاولة
+        const fetchQR = async (isRetry = false) => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 120000); // مهلة دقيقتين (120 ثانية)
+
+            try {
+                const response = await fetch(`/admin/get-qr/${storeId}`, { 
+                    signal: controller.signal 
+                });
+                const data = await response.json();
+                clearTimeout(timeoutId);
+
+                if (data.status === "ready" && data.qr_code) {
+                    qrImage.src = data.qr_code;
+                    Toastify({ 
+                        text: "✅ كود جديد جاهز للمسح", 
+                        backgroundColor: "#10b981" 
+                    }).showToast();
+                } 
+                else if (data.status === "connected") {
+                    qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
+                    Toastify({ 
+                        text: "📱 الواتساب متصل بالفعل ✅", 
+                        backgroundColor: "#3b82f6" 
+                    }).showToast();
+                } 
+                else {
+                    throw new Error(data.message || "فشل التوليد");
+                }
+            } catch (err) {
+                // إذا فشل الاتصال وكان أول مرة، نحاول مرة أخرى بعد 3 ثوانٍ
+                if (!isRetry && (err.name === 'AbortError' || err.message.toLowerCase().includes('fetch'))) {
+                    console.warn("⚠️ محاولة ثانية لتوليد الكود...");
+                    Toastify({ 
+                        text: "⏳ السيرفر يستعد، جاري إعادة المحاولة...", 
+                        backgroundColor: "#3b82f6" 
+                    }).showToast();
+                    
+                    await new Promise(r => setTimeout(r, 3000));
+                    return fetchQR(true); 
+                }
+                
+                console.error("QR Fetch Error:", err);
                 qrImage.src = "https://via.placeholder.com/200?text=Error";
-                Toastify({ text: "⚠️ " + (data.message || "فشل التوليد"), backgroundColor: "#f59e0b" }).showToast();
+                const msg = err.name === 'AbortError' ? "السيرفر بطيء جداً، حاول مجدداً" : "فشل الاتصال بالسيرفر";
+                Toastify({ 
+                    text: "❌ " + msg, 
+                    backgroundColor: "#ef4444" 
+                }).showToast();
             }
-        } catch (err) { 
-            console.error("QR Fetch Error:", err);
-            qrImage.src = "https://via.placeholder.com/200?text=Network+Error";
-            Toastify({ text: "❌ فشل الاتصال بالسيرفر", backgroundColor: "#ef4444" }).showToast();
-        } finally { 
-            qrBox.classList.remove("animate-pulse");
-            qrBox.style.opacity = "1";
-            qrImage.style.filter = "none";
-            
-            qrImage.classList.add("transition-all", "duration-500", "scale-110");
-            setTimeout(() => {
-                qrImage.classList.remove("scale-110");
-                qrImage.classList.add("scale-100");
-            }, 300);
-        }
+        };
+
+        await fetchQR();
+
+        // إعادة الواجهة لطبيعتها بعد اكتمال الطلب
+        qrBox.classList.remove("animate-pulse");
+        qrBox.style.opacity = "1";
+        qrImage.style.filter = "none";
+        qrImage.classList.add("transition-all", "duration-500", "scale-110");
+        
+        setTimeout(() => {
+            qrImage.classList.remove("scale-110");
+            qrImage.classList.add("scale-100");
+        }, 300);
     }
+
+
 
     async function saveSettings() {
         const btn = document.getElementById('saveBtn');
