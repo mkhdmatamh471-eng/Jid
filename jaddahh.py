@@ -1660,7 +1660,8 @@ async def start_monitoring_after_qr(page, store_id: str):
 
         # --- 🚀 إجراءات الطوارئ لتوفير الرام فوراً ---
         # حظر الصور فوراً لمنع المتصفح من ملء الرام بالوسائط الجديدة
-        await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue())
+        await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue_())
+
 
         # 2. الحفظ السحابي الفوري (لا تنتظر 30 ثانية)
         # ملفات الجلسة تُكتب على القرص بمجرد ظهور الواجهة، لا داعي للتأخير
