@@ -294,7 +294,7 @@ async def get_handler_for_store(store_id: str):
             logger.info(f"✅ المتصفح جاهز (Ultra-Light) للمتجر {store_id}.")
             return page
 
-    except exception as e:
+    except Exception as e:
         logger.error(f"❌ خطأ حرج في المتجر {store_id}: {e}")
         return None
 
