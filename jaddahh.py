@@ -226,68 +226,54 @@ async def get_handler_for_store(store_id: str):
     # 1. التحقق من الصفحة النشطة (تجنب فتح متصفحات متعددة لنفس المتجر)
     if store_id in pages and not pages[store_id].is_closed():
         try:
-            # اختبار سريع لاستجابة الصفحة
             await pages[store_id].evaluate("1+1")
             return pages[store_id]
         except Exception:
             logger.warning(f"🔄 إعادة تهيئة صفحة المتجر {store_id}...")
             await cleanup_store_resources(store_id)
 
-    # 2. حماية الذاكرة - الدخول في الطابور إذا كان هناك ضغط على السيرفر
+    # 2. حماية الذاكرة - الدخول في الطابور
     async with memory_semaphore:
-        logger.info(f"🚦 دور المتجر {store_id} في المعالجة الآن (تم السماح بالمرور)...")
+        logger.info(f"🚦 دور المتجر {store_id} في المعالجة الآن...")
         
-        # إعداد المسارات المحلية للجلسة
         storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
         os.makedirs(SESSION_PATH, exist_ok=True)
 
-        # تشغيل محرك Playwright إذا لم يكن يعمل
         if playwright_manager is None:
             playwright_manager = await async_playwright().start()
             logger.info("🚀 محرك Playwright جاهز")
 
-        # 3. استعادة الجلسة من Supabase (السحاب) إذا لم تكن موجودة محلياً
         if not os.path.exists(storage_path) or not os.listdir(storage_path):
-            logger.info(f"📥 محاولة استعادة جلسة المتجر {store_id} من السحاب...")
             await load_session_from_db(store_id)
 
-        # 4. تشغيل المتصفح بإعدادات "الصمود" والتوفير الأقصى للموارد
         try:
-            # 🧹 تنظيف ملفات النظام المؤقتة قبل التشغيل لتوفير مساحة القرص في Render
             shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
 
             logger.info(f"🌐 تشغيل متصفح المتجر: {store_id}")
             context = await playwright_manager.chromium.launch_persistent_context(
                 user_data_dir=storage_path,
                 headless=True,
-                # أعلام (Flags) لتقليل استهلاك الرام والمعالج (CPU) لأقصى حد
                 args=[
                     "--no-sandbox", 
                     "--disable-setuid-sandbox", 
                     "--disable-dev-shm-usage", 
                     "--disable-gpu",
                     "--disable-software-rasterizer",
-                    "--single-process", # توفير ضخم في الرام
-                    "--js-flags='--max-old-space-size=256'" # منع الجافاسكربت من استهلاك أكثر من 256 ميجا
+                    "--single-process",
+                    "--js-flags='--max-old-space-size=256'"
                 ],
                 viewport={'width': 800, 'height': 600},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                timeout=120000 # دقيقتين لتشغيل المتصفح نفسه
+                timeout=120000
             )
             
             page = context.pages[0] if context.pages else await context.new_page()
-            
-            # إعداد مهلات افتراضية طويلة جداً لكل العمليات (حرجة جداً للإنترنت الضعيف)
-            page.set_default_navigation_timeout(150000) # دقيقتين ونصف
+            page.set_default_navigation_timeout(150000)
             page.set_default_timeout(150000)
-
-            # حجب الصور والموارد غير الضرورية لتوفير البيانات والسرعة
             await page.route("**/*", block_useless_resources)
 
-            # الانتقال لموقع واتساب ويب
             if "web.whatsapp.com" not in page.url:
                 try:
-                    # ننتظر فقط حتى يتم تحميل هيكل الصفحة (domcontentloaded)
                     await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=120000)
                 except Exception as e:
                     logger.warning(f"⚠️ محاولة إعادة تحميل الصفحة للمتجر {store_id} بسبب بطء الشبكة...")
@@ -296,40 +282,8 @@ async def get_handler_for_store(store_id: str):
             pages[store_id] = page
             contexts[store_id] = context
 
-            # --- 📡 مراقب الاستشعار المطور مع نظام الإغلاق الذاتي ---
-            async def monitor_save_and_close():
-                try:
-                    logger.info(f"📡 مراقب الاستشعار نشط (المهلة: 15 دقيقة) للمتجر {store_id}...")
-                    
-                    # الانتظار حتى ظهور واجهة الدردشات (دليل قاطع على نجاح المسح)
-                    await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000)
-                    
-                    logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
-                    
-                    # 1. انتظار استقرار الملفات (30 ثانية) ضروري قبل ضغط المجلد
-                    await asyncio.sleep(30)
-                    
-                    # 2. حفظ الجلسة سحابياً (تحديث Supabase)
-                    await save_session_to_db(store_id)
-                    
-                    # 3. إرسال إشعار النجاح على الواتساب
-                    await send_connection_success_msg(page, store_id)
-                    
-                    # 4. إعداد مراقب الرسائل الواردة لربط الذكاء الاصطناعي (Groq)
-                    await setup_inbound_observer(page, store_id)
-
-                    # 5. 💡 مؤقت الإغلاق الذاتي: إغلاق المتصفح بعد 5 دقائق من النجاح لتحرير الرام
-                    logger.info(f"⏲️ سيعمل المتجر {store_id} الآن، وسيتم تحرير ذاكرته خلال 5 دقائق...")
-                    await asyncio.sleep(300) 
-                    await cleanup_store_resources(store_id)
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ توقف مراقب المتجر {store_id} أو انتهت المهلة: {e}")
-
-            # تشغيل المراقب كمهمة خلفية لضمان عدم حجب واجهة المستخدم وتحرير الـ Semaphore
-            asyncio.create_task(monitor_save_and_close())
-
-            logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
+            # 🛑 التعديل الرئيسي: لا يوجد مراقبة هنا، فقط نعيد الصفحة بسرعة
+            logger.info(f"✅ المتصفح جاهز للمتجر {store_id} (بدون مراقب خلفي).")
             return page
 
         except Exception as e:
@@ -1699,6 +1653,28 @@ async def update_config(store_id: str, settings: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def start_monitoring_after_qr(page, store_id: str):
+    """دالة مستقلة لمراقبة نجاح الربط وإغلاق المتصفح بعد مسح الباركود"""
+    try:
+        logger.info(f"📡 مراقب الاستشعار بدأ الآن في الخلفية للمتجر {store_id}...")
+        
+        # الانتظار حتى ظهور واجهة الدردشات
+        await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000) # 15 دقيقة
+        
+        logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
+        await asyncio.sleep(30)
+        
+        await save_session_to_db(store_id)
+        await send_connection_success_msg(page, store_id)
+        await setup_inbound_observer(page, store_id)
+
+        logger.info(f"⏲️ سيعمل المتجر {store_id} الآن، وسيتم تحرير ذاكرته خلال 5 دقائق...")
+        await asyncio.sleep(300) 
+        await cleanup_store_resources(store_id)
+        
+    except Exception as e:
+        logger.warning(f"⚠️ توقف مراقب المتجر {store_id} أو انتهت المهلة: {e}")
+
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     try:
@@ -1708,31 +1684,30 @@ async def get_whatsapp_qr(store_id: str):
         if not row: 
             return {"status": "error", "message": "المتجر غير مسجل"}
 
-        # 2. الحصول على الصفحة (Playwright)
+        # 2. الحصول على الصفحة (Playwright) - الآن أصبحت سريعة بدون مراقب داخلي
         page = await get_handler_for_store(store_id)
         if not page: 
             return {"status": "error", "message": "السيرفر مجهد، فشل فتح المتصفح"}
 
-        # إعداد مهلة انتظار طويلة للعمليات الداخلية بسبب ضعف الإنترنت
+        # إعداد مهلة انتظار للعمليات الداخلية
         page.set_default_timeout(100000) 
 
         logger.info(f"⏳ جاري فحص حالة واتساب للمتجر {store_id}...")
         
-        # 3. فحص ذكي: هل دخلنا فعلاً؟ (يوفر وقت التحميل)
+        # 3. فحص ذكي: هل دخلنا فعلاً؟ (توفير وقت)
         if await page.query_selector("div[data-testid='chat-list']"):
             return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
 
-        # 4. محاولة استخراج الباركود (مع الصبر على الشبكة)
+        # 4. محاولة استخراج الباركود (الصبر على الشبكة الضعيفة)
         try:
-            # ننتظر ظهور الحاوية بمهلة 90 ثانية لتعويض بطء التحميل
+            # ننتظر ظهور الحاوية بمهلة 90 ثانية لتعويض بطء التحميل في Render
             await page.wait_for_selector("div[data-ref]", timeout=90000)
         except:
-            # إذا فشل، نتحقق مرة أيرة من الدخول قبل إظهار الخطأ
             if await page.query_selector("div[data-testid='chat-list']"):
                 return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
             return {"status": "error", "message": "الإنترنت ضعيف جداً، فشل تحميل الباركود"}
 
-        # 5. استخراج الـ QR بقوة أكبر
+        # 5. استخراج نص الـ QR
         qr_text = await page.evaluate('''() => {
             const el = document.querySelector('div[data-ref]');
             return el ? el.getAttribute('data-ref') : null;
@@ -1740,6 +1715,12 @@ async def get_whatsapp_qr(store_id: str):
             
         if qr_text:
             logger.info(f"✅ تم استخراج النص بنجاح للمتجر {store_id}")
+            
+            # --- 🚀 الجزء الجديد: إطلاق المراقب في الخلفية فور استخراج الكود ---
+            # هذا يضمن بدء مراقبة "نجاح المسح" دون حجب الـ Response الحالي
+            asyncio.create_task(start_monitoring_after_qr(page, store_id))
+            # -------------------------------------------------------------
+
             qr = qrcode.QRCode(version=1, box_size=10, border=2)
             qr.add_data(qr_text)
             qr.make(fit=True)
@@ -1752,18 +1733,21 @@ async def get_whatsapp_qr(store_id: str):
             return {
                 "status": "ready", 
                 "qr_code": f"data:image/png;base64,{img_base64}",
-                "message": "استعد للمسح، الكود جاهز"
+                "message": "استعد للمسح، الكود جاهز والمراقبة بدأت"
             }
                 
         else:
-            # الخطة ب: لقطة الشاشة مع تحسين الدقة
-            logger.warning("⚠️ نص الـ QR مفقود، جاري التقاط لقطة شاشة للـ Canvas...")
+            # الخطة ب: لقطة الشاشة في حال فشل النص
+            logger.warning("⚠️ نص الـ QR مفقود، جاري التقاط لقطة شاشة...")
             canvas = await page.query_selector("canvas")
             if canvas:
-                # ننتظر ثانية لضمان اكتمال رسم الباركود على الـ Canvas
                 await asyncio.sleep(2)
                 img_bytes = await canvas.screenshot(type="png")
                 img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                
+                # إطلاق المراقب أيضاً في حالة لقطة الشاشة
+                asyncio.create_task(start_monitoring_after_qr(page, store_id))
+                
                 return {
                     "status": "ready",
                     "qr_code": f"data:image/png;base64,{img_base64}",
@@ -1774,10 +1758,9 @@ async def get_whatsapp_qr(store_id: str):
 
     except Exception as e:
         logger.error(f"❌ خطأ QR حرج: {e}")
-        # إذا كان الخطأ بسبب Timeout السيرفر
         if "Timeout" in str(e):
-            return {"status": "error", "message": "السيرفر استغرق وقتاً طويلاً، يرجى المحاولة مرة أخرى"}
-        return {"status": "error", "message": "حدث خطأ غير متوقع في توليد الكود"}
+            return {"status": "error", "message": "السيرفر استغرق وقتاً طويلاً، حاول مرة أخرى"}
+        return {"status": "error", "message": "حدث خطأ غير متوقع"}
 
 async def send_whatsapp_message(store_id: str, phone: str, message: str):
     """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر"""
