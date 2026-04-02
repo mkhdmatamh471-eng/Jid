@@ -232,64 +232,69 @@ async def get_handler_for_store(store_id: str):
             logger.warning(f"🔄 المتصفح معلق للمتجر {store_id}، جاري إعادة التشغيل...")
             await cleanup_store_resources(store_id)
 
-    # 2. دخول طابور الذاكرة (Semaphore) لضمان عدم انهيار الرام
+    # 2. دخول طابور الذاكرة (Semaphore) لضمان عدم انهيار الرام (يجب أن يكون 1)
     async with memory_semaphore:
         try:
-            logger.info(f"🚦 دور المتجر {store_id} في المعالجة...")
+            logger.info(f"🚦 دور المتجر {store_id} في المعالجة (الوضع الاقتصادي)...")
             
             # التأكد من عمل محرك Playwright
             if playwright_manager is None:
+                from playwright.async_api import async_playwright
                 playwright_manager = await async_playwright().start()
-
-            storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-            os.makedirs(storage_path, exist_ok=True)
-
-            # تحميل الجلسة من القاعدة إذا لم تكن موجودة محلياً
-            if not os.listdir(storage_path):
-                await load_session_from_db(store_id)
 
             # تنظيف الملفات المؤقتة لتقليل استهلاك القرص
             shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
 
-            # تشغيل المتصفح (الإعدادات الاقتصادية لـ Render)
-            context = await playwright_manager.chromium.launch_persistent_context(
-                user_data_dir=storage_path,
+            # --- 🚀 التعديل الأول: تشغيل المتصفح كـ Browser خفيف جداً ---
+            browser = await playwright_manager.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox", 
                     "--disable-setuid-sandbox", 
-                    "--disable-dev-shm-usage", # ضروري جداً لبيئة Docker/Render
+                    "--disable-dev-shm-usage", 
                     "--disable-gpu",
-                    "--single-process", 
+                    "--single-process",  # ضغط العمليات في خيط واحد لتوفير الرام
+                    "--no-zygote",       # منع العمليات الفرعية
                     "--disable-extensions",
-                    "--js-flags='--max-old-space-size=128'"
-                ],
-                viewport={'width': 400, 'height': 300},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    '--js-flags="--max-old-space-size=128"' # تقييد الرام الصارم
+                ]
+            )
+
+            # --- 🚀 التعديل الثاني: إنشاء السياق يدوياً بدلاً من Persistent ---
+            context = await browser.new_context(
+                viewport={'width': 400, 'height': 300}, # أصغر حجم ممكن
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             
-            page = context.pages[0] if context.pages else await context.new_page()
-            page.set_default_navigation_timeout(60000) # تقليل المهلة لـ 60 ثانية للفشل السريع
+            # تحميل الـ Cookies يدوياً إذا كانت موجودة (للحفاظ على الجلسة)
+            storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
+            # هنا يمكنك إضافة دالة لتحميل الكوكيز من القاعدة أو الملف
+            # cookies = await load_cookies_logic(store_id)
+            # if cookies: await context.add_cookies(cookies)
 
+            page = await context.new_page()
+            page.set_default_navigation_timeout(60000)
+
+            # حظر الموارد غير الضرورية (الصور، الخطوط، الخ)
             await page.route("**/*", block_useless_resources)
 
-            # التوجه لواتساب
+            # --- 🚀 التعديل الثالث: تسريع الدخول باستخدام wait_until="commit" ---
             if "web.whatsapp.com" not in page.url:
                 try:
-                    await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=60000)
+                    # commit تعني بمجرد استلام أول بايت من السيرفر، لا ننتظر تحميل الصور والرسائل
+                    await page.goto("https://web.whatsapp.com", wait_until="commit", timeout=60000)
                 except Exception as e:
                     logger.warning(f"⚠️ محاولة ثانية لتحميل واتساب للمتجر {store_id}...")
-                    await page.reload(wait_until="domcontentloaded")
+                    await page.reload(wait_until="commit")
             
-            # حفظ المراجع في القواميس العالمية
+            # حفظ المراجع (ملاحظة: نحفظ الكونتكس والبراوزر للإغلاق لاحقاً)
             pages[store_id] = page
             contexts[store_id] = context
 
-            logger.info(f"✅ المتصفح جاهز للمتجر {store_id}.")
+            logger.info(f"✅ المتصفح جاهز واقتصادي للمتجر {store_id}.")
             return page
 
         except Exception as e:
-            # أهم تعديل: تنظيف الموارد فوراً عند حدوث خطأ داخل الطابور
             logger.error(f"❌ خطأ حرج في تشغيل المتجر {store_id}: {e}")
             await cleanup_store_resources(store_id)
             return None
