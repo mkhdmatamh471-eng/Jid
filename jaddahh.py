@@ -439,57 +439,42 @@ async def on_new_message_logic(payload):
         logger.error(f"❌ خطأ عام في دالة on_new_message_logic: {e}")
 
 async def setup_inbound_observer(page, store_id: str):
-    """حقن كود مراقبة الرسائل لاستخراج البيانات بدقة لكل متجر"""
-    
-    # 1. تعريف الدالة التي تستقبل البيانات من المتصفح (JavaScript -> Python)
+    # تعريف الدالة في بايثون كما هي
     async def on_message_received(payload):
         phone = payload.get("phone")
         text = payload.get("text")
-        
-        logger.info(f"📩 [المتجر: {store_id}] رسالة من {phone}: {text}")
-        
-        if text and phone:
-            # تشغيل المعالجة في الخلفية (Grok AI) لضمان عدم تعليق المتصفح
+        # فلتر بسيط لضمان عدم معالجة نصوص فارغة
+        if text and len(text.strip()) > 0:
+            logger.info(f"📩 [المتجر: {store_id}] رسالة من {phone}: {text}")
             asyncio.create_task(process_customer_request(store_id, phone, text))
     
-    # 2. ربط الدالة بالمتصفح لكي يتمكن الـ JS من مناداتها
     await page.expose_function("notifyNewMessage", on_message_received)
 
-    # 3. حقن كود الـ JavaScript داخل المتصفح (الـ MutationObserver)
+    # حقن كود JS "نحيف" جداً
     await page.evaluate("""
         const observer = new MutationObserver((mutations) => {
-            // البحث عن دوائر الإشعارات غير المقروءة في القائمة الجانبية
+            // البحث عن أي عنصر يحتوي على علامة "غير مقروء" (الدائرة الخضراء)
             const unread = document.querySelector('span[aria-label*="unread"], span[aria-label*="غير مقروءة"]');
-            
             if (unread) {
-                // الوصول لصف المحادثة (الـ Row) الذي يحتوي على الإشعار
                 const chatRow = unread.closest('div[role="row"]');
                 if (chatRow) {
-                    // استخراج الاسم أو الرقم من خاصية title
                     const titleEl = chatRow.querySelector('span[title]');
                     const contact = titleEl ? titleEl.getAttribute('title') : "Unknown";
-                    
-                    // استخراج آخر نص رسالة ظاهر في القائمة (Selectors مرنة لضمان الاستمرارية)
-                    const msgEl = chatRow.querySelector('span._ao3e, span[dir="ltr"]'); 
+                    // محدد نص الرسالة الأخير (أكثر استقراراً)
+                    const msgEl = chatRow.querySelector('span[dir="ltr"]'); 
                     const lastMsg = msgEl ? msgEl.innerText : "";
 
-                    // إرسال البيانات فوراً إلى دالة البايثون
-                    window.notifyNewMessage({
-                        phone: contact,
-                        text: lastMsg
-                    });
+                    // إرسال البيانات
+                    window.notifyNewMessage({ phone: contact, text: lastMsg });
                 }
             }
         });
         
-        // تشغيل المراقب على القائمة الجانبية فقط (توفيراً للرام)
         const sideBar = document.querySelector('#pane-side');
         if (sideBar) {
             observer.observe(sideBar, { childList: true, subtree: true });
-            console.log("✅ MutationObserver active for store");
         }
     """)
-
 async def block_useless_resources(route):
     # إزالة "image" من الحظر لكي يظهر الـ QR وتظهر صور المنتجات لاحقاً
     useless_types = ["media", "font", "manifest"] 
@@ -1663,51 +1648,46 @@ async def update_config(store_id: str, settings: dict):
 
 
 async def start_monitoring_after_qr(page, store_id: str):
-    """دالة مستقلة لمراقبة نجاح الربط وإغلاق المتصفح بعد مسح الباركود مع حماية من الأخطاء"""
     try:
-        logger.info(f"📡 مراقب الاستشعار بدأ الآن في الخلفية للمتجر {store_id}...")
+        logger.info(f"📡 مراقب الاستشعار بدأ للمتجر {store_id}...")
         
-        # التأكد من أن الصفحة لا تزال مفتوحة قبل البدء
-        if page.is_closed():
-            logger.warning(f"🛑 صفحة المتجر {store_id} أغلقت قبل بدء المراقبة.")
-            return
+        if page.is_closed(): return
 
-        # 1. الانتظار حتى ظهور واجهة الدردشات (دليل نجاح المسح)
-        # استخدمنا wait_for_selector مع فحص دوري للحالة
+        # 1. الانتظار حتى ظهور الدردشات (تقليل المهلة لسرعة الاستجابة)
         await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000)
-        
         logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
-        
-        # 2. فترة ثبات (Grace Period) لضمان كتابة ملفات الجلسة (Tokens) على القرص
-        await asyncio.sleep(30)
-        
-        # 3. حفظ الجلسة سحابياً (تأمين الجلسة للمستقبل)
+
+        # --- 🚀 إجراءات الطوارئ لتوفير الرام فوراً ---
+        # حظر الصور فوراً لمنع المتصفح من ملء الرام بالوسائط الجديدة
+        await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue())
+
+        # 2. الحفظ السحابي الفوري (لا تنتظر 30 ثانية)
+        # ملفات الجلسة تُكتب على القرص بمجرد ظهور الواجهة، لا داعي للتأخير
         await save_session_to_db(store_id)
         
-        # 4. إرسال رسالة ترحيبية وتفعيل الملاحظ (Observer)
+        # تحديث حالة الاتصال في القاعدة فوراً
+        update_query = "UPDATE store_settings SET is_connected = 1 WHERE store_id = :sid"
+        execute_db_query(update_query, {"sid": store_id})
+        logger.info(f"💾 تم تأمين الجلسة سحابياً للمتجر {store_id}")
+
+        # 3. محاولة المهام الإضافية (إرسال رسالة الترحيب)
         try:
+            # تقليل مدة الانتظار قبل إرسال الرسالة لضمان استقرار الرام
+            await asyncio.sleep(5) 
             await send_connection_success_msg(page, store_id)
             await setup_inbound_observer(page, store_id)
         except Exception as e:
-            logger.error(f"⚠️ خطأ غير حرج في مهام ما بعد الربط للمتجر {store_id}: {e}")
+            logger.error(f"⚠️ مهام ما بعد الربط تعثرت: {e}")
 
-        # 5. نظام التدمير الذاتي للمتصفح (Self-Destruct) لتحرير الرام
-        # بعد النجاح والحفظ، لا داعي لبقاء الكروم مفتوحاً يستهلك 400MB
-        logger.info(f"⏲️ تم تأمين جلسة {store_id}. سيتم إغلاق المتصفح لتحرير الرام خلال 5 دقائق...")
-        await asyncio.sleep(300) 
-        
-        # استدعاء دالة التنظيف التي تمسح الـ pages والـ contexts
+        # 4. التدمير الذاتي السريع (60 ثانية كافية جداً)
+        # بقاء المتصفح 5 دقائق في Render هو "انتحار" تقني للخطة المجانية
+        logger.info(f"⏲️ سيتم إغلاق المتصفح لتحرير الرام خلال 60 ثانية...")
+        await asyncio.sleep(60) 
         await cleanup_store_resources(store_id)
         
     except Exception as e:
-        if "Target closed" in str(e) or "context closed" in str(e):
-            logger.warning(f"⚠️ تم إغلاق متصفح المتجر {store_id} يدوياً أو انهار السياق.")
-        elif "Timeout" in str(e):
-            logger.warning(f"⏳ انتهت مهلة الـ 15 دقيقة دون مسح الباركود للمتجر {store_id}.")
-            # يفضل تنظيف الموارد هنا أيضاً لو انتهى الوقت ولم يمسح
-            await cleanup_store_resources(store_id)
-        else:
-            logger.error(f"❌ خطأ غير متوقع في مراقب المتجر {store_id}: {e}")
+        logger.error(f"❌ خطأ في مراقب المتجر {store_id}: {e}")
+        await cleanup_store_resources(store_id)
 
 
 @app.get("/admin/get-qr/{store_id}")
@@ -1812,33 +1792,49 @@ async def get_whatsapp_qr(store_id: str):
         return {"status": "error", "message": "حدث خطأ فني أثناء تحضير الكود"}
 
 async def send_whatsapp_message(store_id: str, phone: str, message: str):
-    """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر"""
+    """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر باستهلاك موارد منخفض"""
     try:
         page = await get_handler_for_store(store_id)
         if not page:
-            logger.error("❌ المتصفح غير جاهز للإرسال")
+            logger.error(f"❌ المتصفح غير جاهز للإرسال للمتجر {store_id}")
             return False
 
-        # تنظيف رقم الهاتف (إضافة مفتاح الدولة إذا نقص)
-        clean_phone = phone.replace("+", "").replace(" ", "")
-        url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={urllib.parse.quote(message)}"
+        # 1. تنظيف رقم الهاتف (يجب أن يكون بدون + وبدون أصفار دولية زائدة)
+        clean_phone = "".join(filter(str.isdigit, phone))
         
-        await page.goto(url)
+        # 2. تجهيز الرابط المباشر
+        encoded_message = urllib.parse.quote(message)
+        url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={encoded_message}"
         
-        # الانتظار حتى يظهر زر الإرسال (أيقونة الإرسال في واتساب ويب)
-        send_button_selector = "span[data-testid='send'], button[data-testid='compose-btn-send']"
-        await page.wait_for_selector(send_button_selector, timeout=20000)
+        logger.info(f"📤 محاولة إرسال رسالة إلى {clean_phone}...")
+
+        # 3. التوجه للرابط مع wait_until="commit" لتوفير الرام
+        # لا ننتظر تحميل كل العناصر، فقط وصول الاستجابة من السيرفر
+        await page.goto(url, wait_until="commit", timeout=45000)
         
-        # الضغط على زر الإرسال
-        await page.click(send_button_selector)
+        # 4. محددات زر الإرسال (واتساب ويب يغيرها أحياناً)
+        send_button_selector = "span[data-testid='send'], button[data-testid='compose-btn-send'], [data-icon='send']"
         
-        # انتظار بسيط للتأكد من خروج الرسالة قبل إغلاق أو تحويل الصفحة
-        await asyncio.sleep(2)
-        logger.info(f"✅ تم إرسال الرسالة بنجاح إلى {phone}")
-        return True
+        try:
+            # الانتظار حتى يظهر الزر بمهلة زمنية معقولة
+            await page.wait_for_selector(send_button_selector, timeout=30000)
+            
+            # 5. ضغطة إرسال "نظيفة"
+            await page.click(send_button_selector)
+            
+            # انتظار بسيط جداً لضمان معالجة الطلب في المتصفح قبل الانتقال للمهمة التالية
+            await asyncio.sleep(2)
+            
+            logger.info(f"✅ تم الإرسال بنجاح إلى {clean_phone}")
+            return True
+
+        except Exception as timeout_error:
+            # فحص أخير: ربما تم الإرسال تلقائياً أو الرقم غير صحيح
+            logger.warning(f"⚠️ لم يتم العثور على زر الإرسال للرقم {clean_phone}، قد يكون الرقم غير مسجل في واتساب.")
+            return False
 
     except Exception as e:
-        logger.error(f"❌ فشل إرسال الرسالة إلى {phone}: {e}")
+        logger.error(f"❌ خطأ حرج أثناء الإرسال للمتجر {store_id}: {e}")
         return False
 
 # تأكد من استيراد هذا
