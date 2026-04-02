@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import tarfile
+import json
 import qrcode
 import shutil
 import base64
@@ -224,75 +225,71 @@ async def cleanup_store_resources(store_id: str):
 async def get_handler_for_store(store_id: str):
     global playwright_manager, pages, contexts
     
-    # 1. التحقق السريع: إذا كان المتصفح يعمل، لا تدخل في طابور الانتظار
+    # 1. التحقق السريع: إذا كانت الصفحة مفتوحة ومستجيبة
     if store_id in pages and not pages[store_id].is_closed():
         try:
-            await pages[store_id].evaluate("1+1") # التأكد أن الصفحة مستجيبة
+            await pages[store_id].evaluate("1+1") 
             return pages[store_id]
         except Exception:
-            logger.warning(f"🔄 المتصفح معلق للمتجر {store_id}، جاري إعادة التشغيل...")
+            logger.warning(f"🔄 إعادة تشغيل المتصفح للمتجر {store_id}...")
             await cleanup_store_resources(store_id)
 
-    # 2. دخول طابور الذاكرة (Semaphore) لضمان عدم انهيار الرام (يجب أن يكون 1)
+    # 2. دخول طابور الذاكرة (Semaphore=1) لضمان عدم انهيار الرام في Render
     async with memory_semaphore:
         try:
-            logger.info(f"🚦 دور المتجر {store_id} في المعالجة (الوضع الاقتصادي)...")
+            logger.info(f"🚦 بدء تشغيل المتجر {store_id} بنظام الكوكيز...")
             
-            # التأكد من عمل محرك Playwright
             if playwright_manager is None:
                 from playwright.async_api import async_playwright
                 playwright_manager = await async_playwright().start()
 
-            # تنظيف الملفات المؤقتة لتقليل استهلاك القرص
-            shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
-
-            # --- 🚀 التعديل الأول: تشغيل المتصفح كـ Browser خفيف جداً ---
+            # تشغيل محرك المتصفح بأقل عدد ممكن من العمليات (Single Process)
             browser = await playwright_manager.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox", 
-                    "--disable-setuid-sandbox", 
                     "--disable-dev-shm-usage", 
                     "--disable-gpu",
-                    "--single-process",  # ضغط العمليات في خيط واحد لتوفير الرام
-                    "--no-zygote",       # منع العمليات الفرعية
-                    "--disable-extensions",
-                    '--js-flags="--max-old-space-size=128"' # تقييد الرام الصارم
+                    "--single-process",
+                    "--no-zygote",
+                    '--js-flags="--max-old-space-size=128"' 
                 ]
             )
 
-            # --- 🚀 التعديل الثاني: إنشاء السياق يدوياً بدلاً من Persistent ---
+            # إنشاء سياق (Context) جديد خفيف الوزن
             context = await browser.new_context(
-                viewport={'width': 400, 'height': 300}, # أصغر حجم ممكن
+                viewport={'width': 400, 'height': 300},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
-            
-            # تحميل الـ Cookies يدوياً إذا كانت موجودة (للحفاظ على الجلسة)
-            storage_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-            # هنا يمكنك إضافة دالة لتحميل الكوكيز من القاعدة أو الملف
-            # cookies = await load_cookies_logic(store_id)
-            # if cookies: await context.add_cookies(cookies)
+
+            # --- 🚀 الخطوة الذهبية: استعادة الجلسة من قاعدة البيانات ---
+            try:
+                query = "SELECT session_data FROM store_sessions WHERE store_id = :sid LIMIT 1"
+                row = execute_db_query(query, {"sid": store_id}, fetch="one")
+                
+                if row and row['session_data']:
+                    import json
+                    # نفترض أن session_data مخزنة كـ JSON Text للكوكيز
+                    cookies = json.loads(row['session_data'])
+                    await context.add_cookies(cookies)
+                    logger.info(f"🔓 تم حقن جليسة المتجر {store_id} (الكوكيز) من القاعدة.")
+            except Exception as se:
+                logger.warning(f"⚠️ لم يتم العثور على جلسة صالحة للمتجر {store_id}: {se}")
 
             page = await context.new_page()
-            page.set_default_navigation_timeout(60000)
-
-            # حظر الموارد غير الضرورية (الصور، الخطوط، الخ)
-            await page.route("**/*", block_useless_resources)
-
-            # --- 🚀 التعديل الثالث: تسريع الدخول باستخدام wait_until="commit" ---
-            if "web.whatsapp.com" not in page.url:
-                try:
-                    # commit تعني بمجرد استلام أول بايت من السيرفر، لا ننتظر تحميل الصور والرسائل
-                    await page.goto("https://web.whatsapp.com", wait_until="commit", timeout=60000)
-                except Exception as e:
-                    logger.warning(f"⚠️ محاولة ثانية لتحميل واتساب للمتجر {store_id}...")
-                    await page.reload(wait_until="commit")
             
-            # حفظ المراجع (ملاحظة: نحفظ الكونتكس والبراوزر للإغلاق لاحقاً)
+            # حظر الصور والخطوط فوراً لتوفير 70% من الرام
+            # تأكد من استخدام continue_() مع الشرطة السفلية لتجنب خطأ بايثون
+            await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "media"] else route.continue_())
+
+            # التوجه لواتساب ويب (الانتظار حتى أول استجابة فقط)
+            await page.goto("https://web.whatsapp.com", wait_until="commit", timeout=60000)
+            
+            # حفظ المراجع للإدارة والتنظيف
             pages[store_id] = page
             contexts[store_id] = context
 
-            logger.info(f"✅ المتصفح جاهز واقتصادي للمتجر {store_id}.")
+            logger.info(f"✅ المتصفح جاهز بنظام الكوكيز للمتجر {store_id}.")
             return page
 
         except Exception as e:
@@ -313,63 +310,41 @@ async def ensure_browser_ready(store_id: str):
     return await get_handler_for_store(store_id)
 
 
-async def save_session_to_db(store_id: str):
-    try:
-        path = os.path.join(SESSION_PATH, f"session_{store_id}")
-        if not os.path.exists(path) or not os.listdir(path): 
-            logger.warning(f"⚠️ مجلد الجلسة فارغ أو غير موجود للمتجر {store_id}")
-            return
 
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-            # إضافة محتويات المجلد مباشرة بدون إضافة المجلد نفسه لتجنب التداخل
-            for item in os.listdir(path):
-                tar.add(os.path.join(path, item), arcname=item)
+
+async def save_session_to_db(store_id: str, page):
+    try:
+        # 1. سحب الكوكيز مباشرة من سياق المتصفح (خفيف جداً)
+        cookies = await page.context.cookies()
+        session_data = json.dumps(cookies)
         
-        b64_session = base64.b64encode(buffer.getvalue()).decode()
-        
-        # تأكد أن store_id هو المفتاح الأساسي في الجدول
+        # 2. حفظ النص في قاعدة البيانات
         query = """
             INSERT INTO store_sessions (store_id, session_data, updated_at)
             VALUES (:sid, :data, NOW())
             ON CONFLICT (store_id) 
             DO UPDATE SET session_data = EXCLUDED.session_data, updated_at = NOW()
         """
-        execute_db_query(query, {"sid": store_id, "data": b64_session})
-        logger.info(f"✅ تم حفظ جلسة المتجر {store_id} بنجاح.")
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء حفظ الجلسة: {e}")
-
-async def load_session_from_db(store_id: str):
-    """تحميل الجلسة من PostgreSQL وفك ضغطها محلياً"""
-    try:
-        # 1. استعلام SQL لجلب البيانات المشفرة (Base64)
-        query = "SELECT session_data FROM store_sessions WHERE store_id = :sid LIMIT 1"
-        row = execute_db_query(query, {"sid": store_id}, fetch="one")
-
-        # 2. التحقق من وجود بيانات
-        if not row or not row[0]:
-            logger.warning(f"⚠️ لا توجد جلسة محفوظة في القاعدة للمتجر {store_id}")
-            return False
-
-        # 3. معالجة البيانات (Base64 -> Binary -> Extraction)
-        b64_data = row[0]
-        compressed_data = base64.b64decode(b64_data)
-        
-        # 4. فك الضغط في المسار المخصص (SESSION_PATH)
-        # 4. فك الضغط في المسار المخصص لكل متجر لضمان رؤية Playwright للملفات
-        store_path = os.path.join(SESSION_PATH, f"session_{store_id}")
-        os.makedirs(store_path, exist_ok=True)
-        
-        buffer = io.BytesIO(compressed_data)
-        with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
-            tar.extractall(path=store_path)
-
-        logger.info(f"📂 تم استعادة جلسة المتجر {store_id} بنجاح من PostgreSQL.")
+        execute_db_query(query, {"sid": store_id, "data": session_data})
+        logger.info(f"✅ تم قنص وحفظ كوكيز المتجر {store_id} بنجاح.")
         return True
-
     except Exception as e:
-        logger.error(f"❌ خطأ كارثي أثناء تحميل الجلسة للمتجر {store_id}: {e}")
+        logger.error(f"❌ خطأ أثناء حفظ الكوكيز: {e}")
+        return False
+
+async def load_session_into_context(store_id: str, context):
+    try:
+        query = "SELECT session_data FROM store_sessions WHERE store_id = :sid"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
+        
+        if row and row['session_data']:
+            cookies = json.loads(row['session_data'])
+            await context.add_cookies(cookies)
+            logger.info(f"🔓 تم حقن جليسة المتجر {store_id} من القاعدة.")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ فشل استعادة الكوكيز: {e}")
         return False
 
 async def on_new_message_logic(payload):
