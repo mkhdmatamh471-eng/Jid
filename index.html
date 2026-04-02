@@ -293,81 +293,72 @@
     }
 /* --- CUSTOM_INDENTATION_8_OVER_4 --- */
 
+    /* --- FINAL_STABLE_VERSION_INDENT_4_8 --- */
+
     async function refreshQR() {
                 const qrImage = document.getElementById('qr-image');
                 const qrBox = document.getElementById('qr-box');
 
-                // تأمين الواجهة بصرياً
+                // 1. تأمين الواجهة بصرياً
                 qrBox.classList.add("animate-pulse");
                 qrBox.style.opacity = "0.6";
                 qrImage.style.filter = "blur(8px)";
-                qrImage.classList.remove("scale-110", "scale-100");
 
-                // دالة داخلية للطلب لتسهيل إعادة المحاولة بمهلة أطول
-                const fetchQR = async (isRetry = false) => {
+                const fetchQR = async (attempt = 1) => {
                         const controller = new AbortController();
-                        // مهلة 3 دقائق كاملة (180 ثانية)
-                        const timeoutId = setTimeout(() => controller.abort(), 180000);
+                        // رفع المهلة لـ 4 دقائق لتجنب رسائل "فشل الاتصال" الحمراء
+                        const timeoutId = setTimeout(() => controller.abort(), 240000);
 
                         try {
                                 const response = await fetch(`/admin/get-qr/${storeId}`, { 
                                         signal: controller.signal 
                                 });
+                                
+                                if (!response.ok) throw new Error("السيرفر لم يستجب");
+                                
                                 const data = await response.json();
                                 clearTimeout(timeoutId);
 
                                 if (data.status === "ready" && data.qr_code) {
                                         qrImage.src = data.qr_code;
-                                        Toastify({ 
-                                                text: "✅ كود جديد جاهز للمسح", 
-                                                backgroundColor: "#10b981" 
-                                        }).showToast();
+                                        Toastify({ text: "✅ كود جديد جاهز", backgroundColor: "#10b981" }).showToast();
+                                        return true;
                                 } 
                                 else if (data.status === "connected") {
                                         qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
-                                        Toastify({ 
-                                                text: "📱 الواتساب متصل بالفعل ✅", 
-                                                backgroundColor: "#3b82f6" 
-                                        }).showToast();
-                                } 
+                                        Toastify({ text: "📱 متصل بالفعل", backgroundColor: "#3b82f6" }).showToast();
+                                        return true;
+                                }
                                 else {
                                         throw new Error(data.message || "فشل التوليد");
                                 }
+
                         } catch (err) {
-                                if (!isRetry && (err.name === 'AbortError' || err.message.toLowerCase().includes('fetch'))) {
-                                        console.warn("⚠️ محاولة ثانية بمهلة طويلة...");
-                                        Toastify({ 
-                                                text: "⏳ السيرفر مستغرق في التحميل، جاري الإعادة...", 
-                                                backgroundColor: "#f59e0b" 
-                                        }).showToast();
-                                        
-                                        await new Promise(r => setTimeout(r, 5000));
-                                        return fetchQR(true); 
+                                clearTimeout(timeoutId);
+                                // إذا فشل الاتصال (وهو ما تظهره صورك)، نعيد المحاولة تلقائياً بعد 3 ثوانٍ
+                                if (attempt < 2) {
+                                        console.log("🔄 إعادة محاولة الاتصال...");
+                                        await new Promise(r => setTimeout(r, 3000));
+                                        return fetchQR(attempt + 1);
                                 }
-                                
-                                console.error("QR Fetch Error:", err);
+
                                 qrImage.src = "https://via.placeholder.com/200?text=Timeout";
-                                const msg = err.name === 'AbortError' ? "انتهت المهلة" : "فشل الاتصال";
                                 Toastify({ 
-                                        text: "❌ " + msg, 
+                                        text: "❌ " + (err.name === 'AbortError' ? "السيرفر بطيء جداً" : "فشل الاتصال بالسيرفر"), 
                                         backgroundColor: "#ef4444" 
                                 }).showToast();
+                                return false;
                         }
                 };
 
-                await fetchQR();
-
-                // إعادة الواجهة لطبيعتها
+                const success = await fetchQR();
+                
+                // 2. إعادة الواجهة لطبيعتها
                 qrBox.classList.remove("animate-pulse");
                 qrBox.style.opacity = "1";
                 qrImage.style.filter = "none";
-                qrImage.classList.add("transition-all", "duration-500", "scale-110");
-                
-                setTimeout(() => {
-                        qrImage.classList.remove("scale-110");
-                        qrImage.classList.add("scale-100");
-                }, 300);
     }
+
 
 
     async function saveSettings() {
