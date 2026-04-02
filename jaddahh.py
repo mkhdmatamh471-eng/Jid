@@ -1704,7 +1704,6 @@ async def start_monitoring_after_qr(page, store_id: str):
         else:
             logger.error(f"❌ خطأ غير متوقع في مراقب المتجر {store_id}: {e}")
 
-/* --- PRESERVE_INDENTATION: 4_SPACES --- */
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
