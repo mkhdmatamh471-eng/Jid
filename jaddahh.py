@@ -1708,58 +1708,68 @@ async def start_monitoring_after_qr(page, store_id: str):
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     try:
-        # 1. التحقق من المتجر (SQL)
+        # 1. التحقق من وجود المتجر وصلاحيته في قاعدة البيانات
         query = "SELECT is_active FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
         if not row: 
             return {"status": "error", "message": "المتجر غير مسجل"}
 
-        # 2. الحصول على الصفحة
+        # 2. الحصول على الصفحة (Page) المخصصة للمتجر من الهاندلر
         page = await get_handler_for_store(store_id)
         if not page: 
             return {"status": "error", "message": "السيرفر مجهد، فشل فتح المتصفح"}
 
         logger.info(f"⏳ جاري فحص حالة واتساب للمتجر {store_id}...")
 
-        # --- 🚀 التعديل الجوهري هنا: فحص سريع جداً للحالة ---
+        # --- 🚀 الفحص الذكي لحالة الصفحة ---
         try:
-            # نحاول العثور على (إما صندوق الدردشة أو حاوية الباركود) في غضون 15 ثانية فقط
-            # هذا يمنع التعليق اللانهائي إذا تجمد المتصفح
             state = await page.evaluate('''() => {
+                // حالة الاتصال بنجاح
                 if (document.querySelector("div[data-testid='chat-list']")) return "connected";
+                // حالة ظهور الباركود (المربع الذي يحتوي على الداتا-ريف)
                 if (document.querySelector("div[data-ref]")) return "qr_ready";
-                if (document.querySelector("canvas")) return "qr_ready";
+                // حالة إعادة المحاولة (زر التحديث الذي يظهر عند انتهاء صلاحية الكود)
+                if (document.querySelector("button span[data-testid='refresh-lqr']")) return "needs_refresh";
+                // حالة التحميل الأولي
                 return "loading";
             }''')
         except Exception as e:
-            logger.error(f"⚠️ المتصفح لا يستجيب للفحص السريع: {e}")
+            logger.error(f"⚠️ فشل الفحص السريع للحالة: {e}")
             state = "error"
 
-        # 3. اتخاذ قرار بناءً على الحالة
+        # 3. اتخاذ القرار بناءً على الحالة المستخرجة
         if state == "connected":
             return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
 
         if state == "error":
-            return {"status": "error", "message": "المتصفح متوقف، جرب تحديث الصفحة"}
+            return {"status": "error", "message": "المتصفح لا يستجيب، جرب تحديث الصفحة"}
 
-        # 4. إذا لم يكن متصلاً، ننتظر الباركود بمهلة محددة
+        # معالجة حالة انتهاء صلاحية الكود (ظهور زر التحديث)
+        if state == "needs_refresh":
+            logger.info(f"🔄 الكود منتهي الصلاحية للمتجر {store_id}، جاري التحديث...")
+            try:
+                await page.click("button span[data-testid='refresh-lqr']")
+                await asyncio.sleep(3) # وقت كافٍ لتوليد كود جديد
+            except:
+                pass
+
+        # 4. انتظار ظهور الباركود بمهلة زمنية (Timeout)
         logger.info(f"📸 محاولة استخراج الباركود للمتجر {store_id}...")
         try:
-            # ننتظر ظهور الباركود بحد أقصى 45 ثانية (مناسب لـ Render)
-            await page.wait_for_selector("div[data-ref], canvas", timeout=45000)
+            # الانتظار حتى 45 ثانية لاستيعاب بطء Render أحياناً
+            await page.wait_for_selector("div[data-ref], canvas, div[data-testid='qrcode']", timeout=45000)
         except Exception:
-            # فحص أخير: ربما اتصل أثناء الانتظار؟
+            # فحص أخير قبل الاستسلام: هل دخل للدردشة فجأة؟
             if await page.query_selector("div[data-testid='chat-list']"):
                 return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
-            return {"status": "error", "message": "تأخر تحميل الباركود، أعد المحاولة"}
+            return {"status": "error", "message": "تأخر تحميل الباركود، يرجى المحاولة لاحقاً"}
 
-        # 5. استخراج نص الـ QR (بنفس منطقك السابق)
-        qr_text = await page.evaluate('''() => {
-            const el = document.querySelector('div[data-ref]');
-            return el ? el.getAttribute('data-ref') : null;
-        }''')
-            
+        # 5. استخراج البيانات وتوليد الصورة
+        # محاولة الحصول على النص (data-ref) لتوليد QR عالي الجودة
+        qr_text = await page.evaluate('document.querySelector("div[data-ref]")?.getAttribute("data-ref")')
+
         if qr_text:
+            # تشغيل مراقب الحالة في الخلفية بمجرد ظهور الكود
             asyncio.create_task(start_monitoring_after_qr(page, store_id))
             
             qr = qrcode.QRCode(version=1, box_size=10, border=2)
@@ -1776,12 +1786,13 @@ async def get_whatsapp_qr(store_id: str):
                 "qr_code": f"data:image/png;base64,{img_base64}",
                 "message": "استعد للمسح، الكود جاهز"
             }
-                
-        # الخطة ب: لقطة الشاشة
-        canvas = await page.query_selector("canvas")
-        if canvas:
-            img_bytes = await canvas.screenshot(type="png")
+
+        # الخطة البديلة: تصوير العنصر (Screenshot) إذا تعذر جلب النص
+        qr_container = await page.query_selector('div[data-testid="qrcode"]') or await page.query_selector("canvas")
+        if qr_container:
+            img_bytes = await qr_container.screenshot(type="png")
             img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+            
             asyncio.create_task(start_monitoring_after_qr(page, store_id))
             return {
                 "status": "ready",
@@ -1789,11 +1800,11 @@ async def get_whatsapp_qr(store_id: str):
                 "message": "امسح الكود من الصورة"
             }
             
-        return {"status": "error", "message": "تعذر العثور على الباركود"}
+        return {"status": "error", "message": "فشل العثور على عنصر الباركود"}
 
     except Exception as e:
-        logger.error(f"❌ خطأ QR حرج: {e}")
-        return {"status": "error", "message": "حدث خطأ فني في السيرفر"}
+        logger.error(f"❌ خطأ QR حرج للمتجر {store_id}: {e}")
+        return {"status": "error", "message": "حدث خطأ فني أثناء تحضير الكود"}
 
 async def send_whatsapp_message(store_id: str, phone: str, message: str):
     """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر"""
