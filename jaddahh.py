@@ -1654,26 +1654,51 @@ async def update_config(store_id: str, settings: dict):
 
 
 async def start_monitoring_after_qr(page, store_id: str):
-    """دالة مستقلة لمراقبة نجاح الربط وإغلاق المتصفح بعد مسح الباركود"""
+    """دالة مستقلة لمراقبة نجاح الربط وإغلاق المتصفح بعد مسح الباركود مع حماية من الأخطاء"""
     try:
         logger.info(f"📡 مراقب الاستشعار بدأ الآن في الخلفية للمتجر {store_id}...")
         
-        # الانتظار حتى ظهور واجهة الدردشات
-        await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000) # 15 دقيقة
+        # التأكد من أن الصفحة لا تزال مفتوحة قبل البدء
+        if page.is_closed():
+            logger.warning(f"🛑 صفحة المتجر {store_id} أغلقت قبل بدء المراقبة.")
+            return
+
+        # 1. الانتظار حتى ظهور واجهة الدردشات (دليل نجاح المسح)
+        # استخدمنا wait_for_selector مع فحص دوري للحالة
+        await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000)
         
         logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
+        
+        # 2. فترة ثبات (Grace Period) لضمان كتابة ملفات الجلسة (Tokens) على القرص
         await asyncio.sleep(30)
         
+        # 3. حفظ الجلسة سحابياً (تأمين الجلسة للمستقبل)
         await save_session_to_db(store_id)
-        await send_connection_success_msg(page, store_id)
-        await setup_inbound_observer(page, store_id)
+        
+        # 4. إرسال رسالة ترحيبية وتفعيل الملاحظ (Observer)
+        try:
+            await send_connection_success_msg(page, store_id)
+            await setup_inbound_observer(page, store_id)
+        except Exception as e:
+            logger.error(f"⚠️ خطأ غير حرج في مهام ما بعد الربط للمتجر {store_id}: {e}")
 
-        logger.info(f"⏲️ سيعمل المتجر {store_id} الآن، وسيتم تحرير ذاكرته خلال 5 دقائق...")
+        # 5. نظام التدمير الذاتي للمتصفح (Self-Destruct) لتحرير الرام
+        # بعد النجاح والحفظ، لا داعي لبقاء الكروم مفتوحاً يستهلك 400MB
+        logger.info(f"⏲️ تم تأمين جلسة {store_id}. سيتم إغلاق المتصفح لتحرير الرام خلال 5 دقائق...")
         await asyncio.sleep(300) 
+        
+        # استدعاء دالة التنظيف التي تمسح الـ pages والـ contexts
         await cleanup_store_resources(store_id)
         
     except Exception as e:
-        logger.warning(f"⚠️ توقف مراقب المتجر {store_id} أو انتهت المهلة: {e}")
+        if "Target closed" in str(e) or "context closed" in str(e):
+            logger.warning(f"⚠️ تم إغلاق متصفح المتجر {store_id} يدوياً أو انهار السياق.")
+        elif "Timeout" in str(e):
+            logger.warning(f"⏳ انتهت مهلة الـ 15 دقيقة دون مسح الباركود للمتجر {store_id}.")
+            # يفضل تنظيف الموارد هنا أيضاً لو انتهى الوقت ولم يمسح
+            await cleanup_store_resources(store_id)
+        else:
+            logger.error(f"❌ خطأ غير متوقع في مراقب المتجر {store_id}: {e}")
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
