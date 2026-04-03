@@ -104,7 +104,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # --- استبدل قسم المتصفح القديم بهذا الكود ---
 
 # --- قسم Baileys الجديد ---
-WHATSAPP_URL = os.getenv("WHATSAPP_URL", "http://localhost:8080")
+WHATSAPP_URL = os.getenv("WHATSAPP_URL")
+WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY") 
+
 
 class BaileysHandler:
     def __init__(self, store_id: str):
