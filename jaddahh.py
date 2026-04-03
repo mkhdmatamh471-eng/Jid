@@ -1440,7 +1440,7 @@ async def link_phone_by_number(store_id: str, phone: str = "967785022014"):
 
         # 5. استخراج الكود المكون من 8 رموز
         code_selector = "div[data-testid='pairing-code-cell']"
-        await page.wait_for_selector(code_selector, timeout=20000)
+        await page.wait_for_selector(code_selector, timeout=200000)
         
         # دالة JS لجلب الحروف وتجميعها في نص واحد
         pairing_code = await page.evaluate('''() => {
