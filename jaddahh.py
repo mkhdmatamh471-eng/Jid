@@ -1747,20 +1747,30 @@ async def salla_callback(code: str, state: str = None):
         except Exception as e:
             logger.error(f"❌ خطأ غير متوقع: {e}")
             return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500)
+
+
 @app.post("/admin/test-ai/{store_id}")
 async def test_ai(store_id: str, data: dict):
     user_msg = data.get("message")
     system_prompt = data.get("prompt")
     
-    # هنا تقوم باستدعاء Gemini أو OpenAI مباشرة باستخدام الـ Prompt الممرر
-    # ليعطي التاجر نتيجة فورية بناءً على تعديله
     try:
-        # مثال لاستدعاء دالة الرد (تحتاج لربطها بمحرك الـ AI لديك)
-        reply = await get_ai_response(user_msg, system_prompt) 
+        # قمنا بتغيير get_ai_response إلى grok_generate_reply
+        # ونمرر رسالة المستخدم كقائمة (History) كما تتوقع الدالة
+        history = [{"role": "user", "content": user_msg}]
+        
+        # استدعاء دالة Grok التي عرفتها في الأعلى
+        reply = await grok_generate_reply(
+            history=history, 
+            context="اختبار من لوحة التحكم", 
+            system_prompt=system_prompt
+        )
+        
         return {"reply": reply}
     except Exception as e:
+        logger.error(f"Test AI Error: {str(e)}")
         return {"reply": f"خطأ في النظام: {str(e)}"}
-    
+
     
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
