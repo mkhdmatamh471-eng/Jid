@@ -85,7 +85,7 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # 2. جلب بقية المفاتيح
-GROK_API_KEY = os.getenv("GROK_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # 3. إعدادات Salla (يفضل إضافتها أيضاً)
 SALLA_CLIENT_ID = os.getenv("SALLA_CLIENT_ID")
 SALLA_CLIENT_SECRET = os.getenv("SALLA_CLIENT_SECRET")
@@ -351,7 +351,7 @@ async def on_new_message_logic(payload):
                     # ==========================================
                     # 6. تمرير النص للذكاء الاصطناعي وتجهيز الرد
                     # ==========================================
-                    # هنا نربط مع دالة Grok التي كتبناها سابقاً
+                    # هنا نربط مع دالة GROQ التي كتبناها سابقاً
                     # ai_reply = await process_customer_request(store_id, customer_info, message_text)
                     
                     # نص تجريبي مؤقت للتأكد من عمل الكود:
@@ -650,10 +650,10 @@ async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
         logger.error(f"❌ خطأ في get_salla_order للمتجر {store_id}: {e}")
         return "عذراً، لم أتمكن من جلب تفاصيل الطلب حالياً."
 
-# --- خدمات الذكاء الاصطناعي (GROK xAI) ---
+# --- خدمات الذكاء الاصطناعي (GROQ xAI) ---
 
-async def grok_analyze_intent(message: str) -> Dict:
-    """استخراج نية العميل ورقم الطلب باستخدام Grok بدقة وموثوقية عالية"""
+async def groq_analyze_intent(message: str) -> Dict:
+    """استخراج نية العميل ورقم الطلب باستخدام groq بدقة وموثوقية عالية"""
     url = "https://api.x.ai/v1/chat/completions"
     
     # البرومبت المطور لضمان الدقة واستخراج الأرقام بشكل صحيح
@@ -669,9 +669,9 @@ async def grok_analyze_intent(message: str) -> Dict:
     {"is_order": bool, "order_id": string or null}
     """
     
-    headers = {"Authorization": f"Bearer {GROK_API_KEY}"}
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     payload = {
-        "model": "grok-1",
+        "model": "groq-1",
         "messages": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": message}
@@ -691,18 +691,18 @@ async def grok_analyze_intent(message: str) -> Dict:
             
         except Exception as e:
             # تسجيل الخطأ لكي تراجعه لاحقاً دون أن يتوقف البوت
-            logger.error(f"Grok Intent Parsing Error: {str(e)} - Content: {content if 'content' in locals() else 'None'}")
+            logger.error(f"Groq Intent Parsing Error: {str(e)} - Content: {content if 'content' in locals() else 'None'}")
             
             # إرجاع حالة افتراضية آمنة حتى يكمل البوت المحادثة بشكل طبيعي
             return {"is_order": False, "order_id": None}
 
 
 
-async def grok_generate_reply(history: List[Dict], context: str, system_prompt: str) -> str:
+async def groq_generate_reply(history: List[Dict], context: str, system_prompt: str) -> str:
     """توليد رد بشري وذكي بناءً على السياق وتاريخ المحادثة"""
     url = "https://api.x.ai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROK_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
     
@@ -725,7 +725,7 @@ async def grok_generate_reply(history: List[Dict], context: str, system_prompt: 
             response = await client.post(
                 url, 
                 json={
-                    "model": "grok-1", 
+                    "model": "groq-1", 
                     "messages": messages,
                     "temperature": 0.7, # رفعنا الحرارة قليلاً ليكون الكلام بشرياً وليس آلياً جامداً
                     "max_tokens": 500
@@ -743,11 +743,11 @@ async def grok_generate_reply(history: List[Dict], context: str, system_prompt: 
                 
                 return reply
             else:
-                logger.error(f"Grok API Error: {response.status_code} - {response.text}")
+                logger.error(f"groq API Error: {response.status_code} - {response.text}")
                 return "المعذرة منك، يبدو أن هناك ضغط بسيط على النظام. كيف أقدر أساعدك بشيء آخر؟"
                 
         except Exception as e:
-            logger.error(f"Error in grok_generate_reply: {str(e)}")
+            logger.error(f"Error in groq_generate_reply: {str(e)}")
             return "يا هلا بك، حصل عندي عطل بسيط. ممكن تعيد إرسال رسالتك؟"
 
 # --- خدمات واتساب (WhatsApp Business API) ---
@@ -1308,10 +1308,10 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
                                             {"cid": cust_db_id}, fetch="all")
             history = [{"role": r[0], "content": r[1]} for r in reversed(history_rows)]
 
-            # تحليل الرد عبر Grok
-            analysis = await grok_analyze_intent(text)
+            # تحليل الرد عبر groq
+            analysis = await groq_analyze_intent(text)
             context = await get_salla_order(analysis["order_id"], store_id) if analysis["order_id"] else ""
-            reply = await grok_generate_reply(history, context, settings[0] if settings else "You are a helpful assistant")
+            reply = await groq_generate_reply(history, context, settings[0] if settings else "You are a helpful assistant")
 
             # التدخل البشري والرد
             if "[HUMAN_REQUIRED]" in reply or "موظف" in text:
@@ -1755,12 +1755,12 @@ async def test_ai(store_id: str, data: dict):
     system_prompt = data.get("prompt")
     
     try:
-        # قمنا بتغيير get_ai_response إلى grok_generate_reply
+        # قمنا بتغيير get_ai_response إلى groq_generate_reply
         # ونمرر رسالة المستخدم كقائمة (History) كما تتوقع الدالة
         history = [{"role": "user", "content": user_msg}]
         
-        # استدعاء دالة Grok التي عرفتها في الأعلى
-        reply = await grok_generate_reply(
+        # استدعاء دالة groq التي عرفتها في الأعلى
+        reply = await groq_generate_reply(
             history=history, 
             context="اختبار من لوحة التحكم", 
             system_prompt=system_prompt
