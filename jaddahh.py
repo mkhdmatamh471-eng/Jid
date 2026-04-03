@@ -58,12 +58,7 @@ def get_db_connection():
     conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode='require')
     return conn
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,  # يفحص الاتصال قبل الاستخدام لتجنب OperationalError
-    pool_recycle=3600,    # إعادة تدوير الروابط كل ساعة
-    connect_args={"sslmode": "require"} # ضروري للاتصال بـ Supabase/Render
-)
+
 
 # قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
 contexts: Dict[str, any] = {} 
