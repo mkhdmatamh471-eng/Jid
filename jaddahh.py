@@ -15,7 +15,6 @@ import tempfile
 import time
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from playwright.async_api import async_playwright
 import base64
 import httpx
 from datetime import datetime
@@ -42,10 +41,7 @@ from fastapi.responses import RedirectResponse
 templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
 # تعريف المتغيرات كـ None في البداية
-playwright_manager = None
-browser_instance = None
-pages = {}
-contexts = {}
+
 
 app = FastAPI()
 
@@ -104,6 +100,41 @@ engine = create_engine(
 
 # إنشاء مصنع الجلسات
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# --- استبدل قسم المتصفح القديم بهذا الكود ---
+
+# --- قسم Baileys الجديد ---
+WHATSAPP_URL = os.getenv("WHATSAPP_URL", "http://localhost:8080")
+
+class BaileysHandler:
+    def __init__(self, store_id: str):
+        self.store_id = store_id
+
+    async def send_text(self, phone: str, text: str):
+        async with httpx.AsyncClient() as client:
+            try:
+                clean_phone = "".join(filter(str.isdigit, phone))
+                # إرسال الطلب لخدمة Baileys الخارجية
+                response = await client.post(
+                    f"{WHATSAPP_URL}/message/sendText/{self.store_id}",
+                    json={"number": clean_phone, "text": text},
+                    timeout=15.0
+                )
+                return response.status_code in [200, 201]
+            except Exception as e:
+                logger.error(f"❌ Baileys Send Error: {e}")
+                return False
+
+    async def get_status(self):
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{self.store_id}")
+                return resp.json().get("instance", {}).get("state") == "open"
+            except: return False
+
+# دالة الجسر: استبدل الدالة القديمة بهذه لضمان عمل الـ Worker والسلال المتروكة
+async def get_handler_for_store(store_id: str):
+    return BaileysHandler(store_id)
 
 def execute_db_query(query: str, params: dict = None, fetch: str = None):
     """
@@ -208,94 +239,24 @@ def clear_local_sessions():
 # 🚦 التحكم في تدفق الموارد لحماية الرام في Render
 # نضبطه على 1 لضمان عدم انهيار السيرفر نهائياً (يسمح بفتح متصفح واحد فقط في نفس اللحظة للربط)
 MAX_CONCURRENT_BROWSERS = 1 
-memory_semaphore = asyncio.Semaphore(MAX_CONCURRENT_BROWSERS)
 
-async def cleanup_store_resources(store_id: str):
-    """دالة مساعدة لإغلاق موارد المتجر وتحرير الرام بالكامل"""
-    global pages, contexts
-    try:
-        if store_id in contexts:
-            await contexts[store_id].close()
-        pages.pop(store_id, None)
-        contexts.pop(store_id, None)
-        logger.info(f"♻️ تم إغلاق متصفح المتجر {store_id} وتحرير الذاكرة بنجاح.")
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء تنظيف موارد المتجر {store_id}: {e}")
+
 
 async def get_handler_for_store(store_id: str):
-    global playwright_manager, pages, contexts
+    """
+    بديل النظام القديم: يعيد Handler يتعامل مع API بدلاً من Page
+    """
+    handler = BaileysHandler(store_id)
     
-    # 1. التحقق السريع: إذا كانت الصفحة مفتوحة ومستجيبة
-    if store_id in pages and not pages[store_id].is_closed():
-        try:
-            await pages[store_id].evaluate("1+1") 
-            return pages[store_id]
-        except Exception:
-            logger.warning(f"🔄 إعادة تشغيل المتصفح للمتجر {store_id}...")
-            await cleanup_store_resources(store_id)
-
-    # 2. دخول طابور الذاكرة (Semaphore=1) لضمان عدم انهيار الرام في Render
-    async with memory_semaphore:
-        try:
-            logger.info(f"🚦 بدء تشغيل المتجر {store_id} بنظام الكوكيز...")
-            
-            if playwright_manager is None:
-                from playwright.async_api import async_playwright
-                playwright_manager = await async_playwright().start()
-
-            # تشغيل محرك المتصفح بأقل عدد ممكن من العمليات (Single Process)
-            browser = await playwright_manager.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox", 
-                    "--disable-dev-shm-usage", 
-                    "--disable-gpu",
-                    "--single-process",
-                    "--no-zygote",
-                    '--js-flags="--max-old-space-size=128"' 
-                ]
-            )
-
-            # إنشاء سياق (Context) جديد خفيف الوزن
-            context = await browser.new_context(
-                viewport={'width': 400, 'height': 300},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-
-            # --- 🚀 الخطوة الذهبية: استعادة الجلسة من قاعدة البيانات ---
-            try:
-                query = "SELECT session_data FROM store_sessions WHERE store_id = :sid LIMIT 1"
-                row = execute_db_query(query, {"sid": store_id}, fetch="one")
-                
-                if row and row['session_data']:
-                    import json
-                    # نفترض أن session_data مخزنة كـ JSON Text للكوكيز
-                    cookies = json.loads(row['session_data'])
-                    await context.add_cookies(cookies)
-                    logger.info(f"🔓 تم حقن جليسة المتجر {store_id} (الكوكيز) من القاعدة.")
-            except Exception as se:
-                logger.warning(f"⚠️ لم يتم العثور على جلسة صالحة للمتجر {store_id}: {se}")
-
-            page = await context.new_page()
-            
-            # حظر الصور والخطوط فوراً لتوفير 70% من الرام
-            # تأكد من استخدام continue_() مع الشرطة السفلية لتجنب خطأ بايثون
-            await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font", "media"] else route.continue_())
-
-            # التوجه لواتساب ويب (الانتظار حتى أول استجابة فقط)
-            await page.goto("https://web.whatsapp.com", wait_until="commit", timeout=60000)
-            
-            # حفظ المراجع للإدارة والتنظيف
-            pages[store_id] = page
-            contexts[store_id] = context
-
-            logger.info(f"✅ المتصفح جاهز بنظام الكوكيز للمتجر {store_id}.")
-            return page
-
-        except Exception as e:
-            logger.error(f"❌ خطأ حرج في تشغيل المتجر {store_id}: {e}")
-            await cleanup_store_resources(store_id)
-            return None
+    # فحص هل الجلسة تعمل؟
+    is_alive = await handler.get_status()
+    
+    if not is_alive:
+        logger.warning(f"⚠️ جلسة المتجر {store_id} غير متصلة في Baileys.")
+        # هنا يمكنك محاولة تشغيلها تلقائياً إذا أردت
+        # await init_whatsapp_session(store_id)
+        
+    return handler
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
@@ -312,40 +273,6 @@ async def ensure_browser_ready(store_id: str):
 
 
 
-async def save_session_to_db(store_id: str, page):
-    try:
-        # 1. سحب الكوكيز مباشرة من سياق المتصفح (خفيف جداً)
-        cookies = await page.context.cookies()
-        session_data = json.dumps(cookies)
-        
-        # 2. حفظ النص في قاعدة البيانات
-        query = """
-            INSERT INTO store_sessions (store_id, session_data, updated_at)
-            VALUES (:sid, :data, NOW())
-            ON CONFLICT (store_id) 
-            DO UPDATE SET session_data = EXCLUDED.session_data, updated_at = NOW()
-        """
-        execute_db_query(query, {"sid": store_id, "data": session_data})
-        logger.info(f"✅ تم قنص وحفظ كوكيز المتجر {store_id} بنجاح.")
-        return True
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء حفظ الكوكيز: {e}")
-        return False
-
-async def load_session_into_context(store_id: str, context):
-    try:
-        query = "SELECT session_data FROM store_sessions WHERE store_id = :sid"
-        row = execute_db_query(query, {"sid": store_id}, fetch="one")
-        
-        if row and row['session_data']:
-            cookies = json.loads(row['session_data'])
-            await context.add_cookies(cookies)
-            logger.info(f"🔓 تم حقن جليسة المتجر {store_id} من القاعدة.")
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"❌ فشل استعادة الكوكيز: {e}")
-        return False
 
 async def on_new_message_logic(payload):
     """
@@ -810,53 +737,15 @@ async def send_whatsapp_dynamic(store_id: str, phone: str, text: str):
 
 # تحسين دالة send_via_web_bridge لتكون أكثر ذكاءً
 async def send_via_web_bridge(store_id: str, phone: str, text: str):
-    """إرسال رسالة عبر متصفح متجر محدد باستخدام نظام الجلسات الموحد"""
-    try:
-        # 1. التأكد من جاهزية المتصفح واستعادة الجلسة لهذا المتجر تحديداً
-        # نستخدم ensure_browser_ready لضمان أن المتصفح يعمل والـ Session محملة
-        page = await ensure_browser_ready(store_id)
-        
-        if not page:
-            logger.error(f"❌ تعذر تجهيز المتصفح للمتجر {store_id}")
-            return False
-
-        # 2. فحص ما إذا كان الواتساب يطلب مسح الـ QR (جلسة منتهية)
-        qr_canvas = await page.query_selector("canvas")
-        if qr_canvas:
-            logger.error(f"⚠️ المتجر {store_id} يحتاج لإعادة مسح كود QR (الجلسة غير صالحة)")
-            return False
-
-        # 3. تنظيف رقم الهاتف وتجهيز الرابط
-        clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
-        url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={text}" 
-        # ملاحظة: وضع النص في الرابط أحياناً يكون أسرع وأدق
-        
-        # 4. الانتقال إلى المحادثة
-        logger.info(f"⏳ جاري الدخول لمحادثة {clean_phone}...")
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        
-        # 5. الانتظار حتى يظهر صندوق الكتابة (تأكيد تحميل المحادثة)
-        input_selector = 'div[contenteditable="true"][data-tab="10"]'
-        try:
-            await page.wait_for_selector(input_selector, timeout=35000)
-            
-            # 6. محاكاة الكتابة البشرية (اختياري لو أردت كتابة النص يدوياً بدل الرابط)
-            # await page.keyboard.type(text, delay=random.randint(30, 70))
-            
-            # 7. الضغط على إرسال (Enter)
-            await asyncio.sleep(random.uniform(1, 2)) # وقفة بسيطة للتمويه
-            await page.keyboard.press("Enter")
-            
-            logger.info(f"✅ تم إرسال الرسالة بنجاح للرقم {phone} عبر المتجر {store_id}")
-            return True
-            
-        except Exception as timeout_e:
-            logger.error(f"⏳ استغرق تحميل صندوق المحادثة وقتاً طويلاً للرقم {phone}")
-            return False
-
-    except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع في إرسال رسالة المتجر {store_id}: {e}")
-        return False
+    """
+    يرسل الرسالة عبر Baileys API مباشرة
+    """
+    handler = await get_handler_for_store(store_id)
+    success = await handler.send_text(phone, text)
+    if success:
+        logger.info(f"✅ تم الإرسال للمتجر {store_id} عبر Baileys")
+        return True
+    return False
 
 async def get_merchant_stats(store_id: str):
     """جلب إحصائيات المتجر من سلة باستخدام PostgreSQL لجلب التوكن"""
@@ -1683,196 +1572,51 @@ async def update_config(store_id: str, settings: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def start_monitoring_after_qr(page, store_id: str):
-    try:
-        logger.info(f"📡 مراقب الاستشعار بدأ للمتجر {store_id}...")
-        
-        if page.is_closed(): return
-
-        # 1. الانتظار حتى ظهور الدردشات (تقليل المهلة لسرعة الاستجابة)
-        await page.wait_for_selector("div[data-testid='chat-list']", timeout=900000)
-        logger.info(f"✅ تم استشعار نجاح المسح للمتجر {store_id}!")
-
-        # --- 🚀 إجراءات الطوارئ لتوفير الرام فوراً ---
-        # حظر الصور فوراً لمنع المتصفح من ملء الرام بالوسائط الجديدة
-        await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue_())
-
-
-        # 2. الحفظ السحابي الفوري (لا تنتظر 30 ثانية)
-        # ملفات الجلسة تُكتب على القرص بمجرد ظهور الواجهة، لا داعي للتأخير
-        await save_session_to_db(store_id)
-        
-        # تحديث حالة الاتصال في القاعدة فوراً
-        update_query = "UPDATE store_settings SET is_connected = 1 WHERE store_id = :sid"
-        execute_db_query(update_query, {"sid": store_id})
-        logger.info(f"💾 تم تأمين الجلسة سحابياً للمتجر {store_id}")
-
-        # 3. محاولة المهام الإضافية (إرسال رسالة الترحيب)
-        try:
-            # تقليل مدة الانتظار قبل إرسال الرسالة لضمان استقرار الرام
-            await asyncio.sleep(5) 
-            await send_connection_success_msg(page, store_id)
-            await setup_inbound_observer(page, store_id)
-        except Exception as e:
-            logger.error(f"⚠️ مهام ما بعد الربط تعثرت: {e}")
-
-        # 4. التدمير الذاتي السريع (60 ثانية كافية جداً)
-        # بقاء المتصفح 5 دقائق في Render هو "انتحار" تقني للخطة المجانية
-        logger.info(f"⏲️ سيتم إغلاق المتصفح لتحرير الرام خلال 60 ثانية...")
-        await asyncio.sleep(60) 
-        await cleanup_store_resources(store_id)
-        
-    except Exception as e:
-        logger.error(f"❌ خطأ في مراقب المتجر {store_id}: {e}")
-        await cleanup_store_resources(store_id)
-
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     try:
-        # 1. التحقق من وجود المتجر وصلاحيته في قاعدة البيانات
-        query = "SELECT is_active FROM store_settings WHERE store_id = :sid LIMIT 1"
-        row = execute_db_query(query, {"sid": store_id}, fetch="one")
-        if not row: 
-            return {"status": "error", "message": "المتجر غير مسجل"}
+        async with httpx.AsyncClient() as client:
+            # طلب الباركود من سيرفر Baileys/Evolution
+            response = await client.get(f"{WHATSAPP_URL}/instance/connect/{store_id}")
+            data = response.json()
 
-        # 2. الحصول على الصفحة (Page) المخصصة للمتجر من الهاندلر
-        page = await get_handler_for_store(store_id)
-        if not page: 
-            return {"status": "error", "message": "السيرفر مجهد، فشل فتح المتصفح"}
-
-        logger.info(f"⏳ جاري فحص حالة واتساب للمتجر {store_id}...")
-
-        # --- 🚀 الفحص الذكي لحالة الصفحة ---
-        try:
-            state = await page.evaluate('''() => {
-                // حالة الاتصال بنجاح
-                if (document.querySelector("div[data-testid='chat-list']")) return "connected";
-                // حالة ظهور الباركود (المربع الذي يحتوي على الداتا-ريف)
-                if (document.querySelector("div[data-ref]")) return "qr_ready";
-                // حالة إعادة المحاولة (زر التحديث الذي يظهر عند انتهاء صلاحية الكود)
-                if (document.querySelector("button span[data-testid='refresh-lqr']")) return "needs_refresh";
-                // حالة التحميل الأولي
-                return "loading";
-            }''')
-        except Exception as e:
-            logger.error(f"⚠️ فشل الفحص السريع للحالة: {e}")
-            state = "error"
-
-        # 3. اتخاذ القرار بناءً على الحالة المستخرجة
-        if state == "connected":
-            return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
-
-        if state == "error":
-            return {"status": "error", "message": "المتصفح لا يستجيب، جرب تحديث الصفحة"}
-
-        # معالجة حالة انتهاء صلاحية الكود (ظهور زر التحديث)
-        if state == "needs_refresh":
-            logger.info(f"🔄 الكود منتهي الصلاحية للمتجر {store_id}، جاري التحديث...")
-            try:
-                await page.click("button span[data-testid='refresh-lqr']")
-                await asyncio.sleep(3) # وقت كافٍ لتوليد كود جديد
-            except:
-                pass
-
-        # 4. انتظار ظهور الباركود بمهلة زمنية (Timeout)
-        logger.info(f"📸 محاولة استخراج الباركود للمتجر {store_id}...")
-        try:
-            # الانتظار حتى 45 ثانية لاستيعاب بطء Render أحياناً
-            await page.wait_for_selector("div[data-ref], canvas, div[data-testid='qrcode']", timeout=200000)
-        except Exception:
-            # فحص أخير قبل الاستسلام: هل دخل للدردشة فجأة؟
-            if await page.query_selector("div[data-testid='chat-list']"):
-                return {"status": "connected", "message": "واتساب متصل بالفعل ✅"}
-            return {"status": "error", "message": "تأخر تحميل الباركود، يرجى المحاولة لاحقاً"}
-
-        # 5. استخراج البيانات وتوليد الصورة
-        # محاولة الحصول على النص (data-ref) لتوليد QR عالي الجودة
-        qr_text = await page.evaluate('document.querySelector("div[data-ref]")?.getAttribute("data-ref")')
-
-        if qr_text:
-            # تشغيل مراقب الحالة في الخلفية بمجرد ظهور الكود
-            asyncio.create_task(start_monitoring_after_qr(page, store_id))
+            if data.get("base64"): # إذا أعاد السيرفر الصورة بصيغة base64
+                return {
+                    "status": "ready",
+                    "qr_code": data["base64"], 
+                    "message": "امسح الكود للربط"
+                }
+            elif data.get("instance", {}).get("state") == "open":
+                return {"status": "connected", "message": "متصل بالفعل ✅"}
             
-            qr = qrcode.QRCode(version=1, box_size=10, border=2)
-            qr.add_data(qr_text)
-            qr.make(fit=True)
-            
-            img = qr.make_image(fill_color="black", back_color="white")
-            buffered = BytesIO()
-            img.save(buffered, format="PNG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            
-            return {
-                "status": "ready", 
-                "qr_code": f"data:image/png;base64,{img_base64}",
-                "message": "استعد للمسح، الكود جاهز"
-            }
-
-        # الخطة البديلة: تصوير العنصر (Screenshot) إذا تعذر جلب النص
-        qr_container = await page.query_selector('div[data-testid="qrcode"]') or await page.query_selector("canvas")
-        if qr_container:
-            img_bytes = await qr_container.screenshot(type="png")
-            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-            
-            asyncio.create_task(start_monitoring_after_qr(page, store_id))
-            return {
-                "status": "ready",
-                "qr_code": f"data:image/png;base64,{img_base64}",
-                "message": "امسح الكود من الصورة"
-            }
-            
-        return {"status": "error", "message": "فشل العثور على عنصر الباركود"}
-
+            return {"status": "error", "message": "فشل توليد الكود"}
     except Exception as e:
-        logger.error(f"❌ خطأ QR حرج للمتجر {store_id}: {e}")
-        return {"status": "error", "message": "حدث خطأ فني أثناء تحضير الكود"}
+        return {"status": "error", "message": "سيرفر الواتساب لا يستجيب"}
 
-async def send_whatsapp_message(store_id: str, phone: str, message: str):
-    """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر باستهلاك موارد منخفض"""
-    try:
-        page = await get_handler_for_store(store_id)
-        if not page:
-            logger.error(f"❌ المتصفح غير جاهز للإرسال للمتجر {store_id}")
-            return False
 
-        # 1. تنظيف رقم الهاتف (يجب أن يكون بدون + وبدون أصفار دولية زائدة)
-        clean_phone = "".join(filter(str.isdigit, phone))
-        
-        # 2. تجهيز الرابط المباشر
-        encoded_message = urllib.parse.quote(message)
-        url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={encoded_message}"
-        
-        logger.info(f"📤 محاولة إرسال رسالة إلى {clean_phone}...")
 
-        # 3. التوجه للرابط مع wait_until="commit" لتوفير الرام
-        # لا ننتظر تحميل كل العناصر، فقط وصول الاستجابة من السيرفر
-        await page.goto(url, wait_until="commit", timeout=45000)
-        
-        # 4. محددات زر الإرسال (واتساب ويب يغيرها أحياناً)
-        send_button_selector = "span[data-testid='send'], button[data-testid='compose-btn-send'], [data-icon='send']"
-        
-        try:
-            # الانتظار حتى يظهر الزر بمهلة زمنية معقولة
-            await page.wait_for_selector(send_button_selector, timeout=30000)
-            
-            # 5. ضغطة إرسال "نظيفة"
-            await page.click(send_button_selector)
-            
-            # انتظار بسيط جداً لضمان معالجة الطلب في المتصفح قبل الانتقال للمهمة التالية
-            await asyncio.sleep(2)
-            
-            logger.info(f"✅ تم الإرسال بنجاح إلى {clean_phone}")
+async def send_whatsapp_message(phone: str, message: str, store_id: str):
+    # إعداد البيانات للـ Evolution API
+    url = f"{WHATSAPP_URL}/message/sendText/{store_id}"
+    headers = {
+        "apikey": WHATSAPP_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "number": phone, # يجب أن يكون الرقم بالصيغة الدولية بدون +
+        "options": {"delay": 1200, "presence": "composing"},
+        "textMessage": {"text": message}
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=payload, headers=headers)
+        if response.status_code == 201:
+            print("✅ تم إرسال الرسالة بنجاح")
             return True
-
-        except Exception as timeout_error:
-            # فحص أخير: ربما تم الإرسال تلقائياً أو الرقم غير صحيح
-            logger.warning(f"⚠️ لم يتم العثور على زر الإرسال للرقم {clean_phone}، قد يكون الرقم غير مسجل في واتساب.")
+        else:
+            print(f"❌ فشل الإرسال: {response.text}")
             return False
-
-    except Exception as e:
-        logger.error(f"❌ خطأ حرج أثناء الإرسال للمتجر {store_id}: {e}")
-        return False
 
 # تأكد من استيراد هذا
 
