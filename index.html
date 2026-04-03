@@ -82,310 +82,389 @@
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        .event-slide-in {
+    animation: slideInRight 0.5s ease-out forwards;
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.event-card {
+    border-right: 3px solid #10b981;
+    background: linear-gradient(to left, rgba(16, 185, 129, 0.05), transparent);
+}
+
+
     </style>
 </head>
 
 <body class="bg-gray-50 text-gray-800">
 
     <div class="min-h-screen p-4 md:p-8">
-        <header class="max-w-6xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-center gap-4 fade-in">
-            <div>
-                <h1 class="text-3xl font-bold text-gray-900">لوحة تحكم البوت الذكي 🤖</h1>
-                <p class="text-gray-500 mt-1">مرحباً بك، يمكنك متابعة أداء الذكاء الاصطناعي وتخصيص الإعدادات.</p>
-            </div>
-            <div class="flex items-center gap-3 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-100">
-                <span class="flex h-3 w-3 rounded-full bg-green-500 animate-pulse"></span>
-                <span class="text-green-700 font-bold text-sm">الجلسة نشطة</span>
-            </div>
-        </header>
+    <header class="max-w-6xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-center gap-4 fade-in">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">لوحة تحكم البوت الذكي 🤖</h1>
+            <p class="text-gray-500 mt-1">مرحباً بك، يمكنك متابعة أداء الذكاء الاصطناعي وتخصيص الإعدادات.</p>
+        </div>
+        <div class="flex items-center gap-3 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-100">
+            <span class="flex h-3 w-3 rounded-full bg-green-500 animate-pulse"></span>
+            <span class="text-green-700 font-bold text-sm">الجلسة نشطة</span>
+        </div>
+    </header>
 
-        <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10 fade-in">
-            <div class="glass-card p-6 rounded-3xl border border-gray-100 border-r-4 border-r-green-500 relative overflow-hidden group">
-                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">أرباح مستردة 💰</p>
-                <h2 class="text-4xl font-black text-green-600 mt-2 tracking-tight" id="recoveredRevenue">--</h2>
-                <p class="text-[10px] text-gray-400 mt-1">بناءً على السلال المستردة</p>
-                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">💹</div>
-            </div>
-
-            <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
-                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">إجمالي ردود البوت</p>
-                <h2 class="text-4xl font-black text-gray-900 mt-2" id="botUsage">--</h2>
-                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🤖</div>
-            </div>
-
-            <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
-                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">سلال متروكة</p>
-                <h2 class="text-4xl font-black text-orange-500 mt-2" id="abandonedCount">--</h2>
-                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🛒</div>
-            </div>
-
-            <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
-                <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">دقة الذكاء AI</p>
-                <h2 class="text-4xl font-black text-blue-500 mt-2">98.4%</h2>
-                <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🎯</div>
-            </div>
+    <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10 fade-in">
+        <div class="glass-card p-6 rounded-3xl border border-gray-100 border-r-4 border-r-green-500 relative overflow-hidden group">
+            <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">أرباح مستردة 💰</p>
+            <h2 class="text-4xl font-black text-green-600 mt-2 tracking-tight" id="recoveredRevenue">--</h2>
+            <p class="text-[10px] text-gray-400 mt-1">بناءً على السلال المستردة</p>
+            <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">💹</div>
         </div>
 
-        <div class="max-w-6xl mx-auto mb-10 fade-in">
-            <div class="glass-card p-6 rounded-3xl border border-gray-100">
-                <h3 class="text-xl font-bold mb-6">مخطط الاسترداد الأسبوعي 📈</h3>
-                <div style="position: relative; height:300px; width:100%" class="custom-table-container">
-                    <canvas id="recoveryChart"></canvas>
-                </div>
-            </div>
+        <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
+            <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">إجمالي ردود البوت</p>
+            <h2 class="text-4xl font-black text-gray-900 mt-2" id="botUsage">--</h2>
+            <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🤖</div>
         </div>
 
-        <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8 fade-in">
-            <div class="lg:col-span-2 glass-card rounded-3xl border border-gray-100 overflow-hidden h-fit">
-                <div class="p-6 border-b border-gray-50 flex justify-between items-center">
-                    <h3 class="text-xl font-bold">آخر المحادثات</h3>
+        <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
+            <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">سلال متروكة</p>
+            <h2 class="text-4xl font-black text-orange-500 mt-2" id="abandonedCount">--</h2>
+            <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🛒</div>
+        </div>
+
+        <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
+            <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">دقة الذكاء AI</p>
+            <h2 class="text-4xl font-black text-blue-500 mt-2">98.4%</h2>
+            <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🎯</div>
+        </div>
+    </div>
+
+    <div class="max-w-6xl mx-auto mb-10 fade-in">
+        <div class="glass-card p-6 rounded-3xl border border-gray-100">
+            <h3 class="text-xl font-bold mb-6">مخطط الاسترداد الأسبوعي 📈</h3>
+            <div style="position: relative; height:300px; width:100%">
+                <canvas id="recoveryChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8 fade-in">
+        
+        <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6 h-fit">
+            <div class="md:col-span-2 glass-card rounded-3xl border border-gray-100 overflow-hidden flex flex-col h-[500px]">
+                <div class="p-6 border-b border-gray-50 flex justify-between items-center bg-white/50">
+                    <h3 class="text-lg font-bold">آخر المحادثات</h3>
                     <button onclick="loadDashboard()" class="text-blue-600 text-sm hover:underline font-semibold">تحديث 🔄</button>
                 </div>
-                <div class="overflow-x-auto custom-table-container">
+                <div class="overflow-y-auto custom-table-container">
                     <table class="w-full text-right">
-                        <thead class="bg-gray-50 text-gray-500 text-sm">
+                        <thead class="bg-gray-50 text-gray-500 text-[10px] sticky top-0">
                             <tr>
                                 <th class="p-4">العميل</th>
                                 <th class="p-4">آخر رسالة</th>
                                 <th class="p-4 text-center">الحالة</th>
                             </tr>
                         </thead>
-                        <tbody id="recentChats"></tbody>
+                        <tbody id="recentChats">
+                            </tbody>
                     </table>
                 </div>
             </div>
 
-            <div class="space-y-8">
-                
-                <div class="glass-card p-6 rounded-3xl border border-gray-100 text-center">
-                    <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
-                    
-                    <div id="qr-box" class="qr-gradient flex items-center justify-center w-64 h-64 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden transition-all duration-500">
-                        <img id="qr-image" 
-                             src="https://via.placeholder.com/200?text=Scan+QR" 
-                             class="max-w-[85%] max-h-[85%] object-contain rounded-lg transition-transform duration-300" 
-                             alt="QR Code">
-                    </div>
+            <div class="md:col-span-1 glass-card rounded-3xl border border-gray-100 flex flex-col h-[500px]">
+                <div class="p-4 border-b border-gray-50 bg-gray-50/50">
+                    <h3 class="text-sm font-bold flex items-center gap-2">
+                        <span class="relative flex h-2 w-2">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                        </span>
+                        الأحداث العاجلة
+                    </h3>
+                </div>
+                <div id="liveEvents" class="p-4 space-y-4 overflow-y-auto flex-grow bg-gray-50/20 custom-table-container">
+                    <p class="text-center text-gray-400 text-[10px] mt-10">في انتظار نشاط جديد...</p>
+                </div>
+            </div>
+        </div>
 
-                    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
-                        افتح واتساب > الأجهزة المرتبطة > ربط جهاز <br>
-                        ثم قم بمسح الكود أعلاه.
-                    </p>
-                    <button onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm">
-                        توليد كود جديد 🔄
+        <div class="space-y-8">
+            <div class="glass-card p-6 rounded-3xl border border-gray-100 text-center">
+                <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
+                <div id="qr-box" class="qr-gradient flex items-center justify-center w-64 h-64 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden">
+                    <img id="qr-image" src="https://via.placeholder.com/200?text=Scan+QR" class="max-w-[85%] max-h-[85%] object-contain rounded-lg shadow-sm" alt="QR Code">
+                </div>
+                <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
+                    افتح واتساب > الأجهزة المرتبطة > ربط جهاز ثم امسح الكود.
+                </p>
+                <button onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm">
+                    توليد كود جديد 🔄
+                </button>
+            </div>
+
+            <div class="glass-card p-6 rounded-3xl border border-gray-100">
+                <h3 class="text-lg font-bold mb-6">إعدادات الذكاء</h3>
+                <div class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-700 mb-2">رقم المسؤول</label>
+                        <input type="text" id="adminPhone" placeholder="9665xxxxxxxx" class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-left" dir="ltr">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-700 mb-2">تعليمات البوت (Prompt)</label>
+                        <textarea id="systemPrompt" rows="4" class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="أنت مساعد ذكي لمتجر..."></textarea>
+                    </div>
+                    <button onclick="saveSettings()" id="saveBtn" class="w-full bg-gray-900 text-white py-4 rounded-xl font-bold hover:bg-black transition shadow-lg">
+                        حفظ الإعدادات
                     </button>
+                    <button onclick="togglePlayground()" class="bg-blue-50 text-blue-600 px-6 rounded-xl font-bold hover:bg-blue-100 transition border border-blue-100 text-sm flex items-center gap-2">
+                تجربة 🧪
+            </button>
                 </div>
-
-                <div class="glass-card p-6 rounded-3xl border border-gray-100">
-                    <h3 class="text-lg font-bold mb-6">إعدادات الذكاء</h3>
-                    <div class="space-y-5">
-                        <div>
-                            <label class="block text-sm font-semibold text-gray-700 mb-2">رقم المسؤول</label>
-                            <input type="text" id="adminPhone" placeholder="9665xxxxxxxx" 
-                                   class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition shadow-inner text-left" dir="ltr">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-semibold text-gray-700 mb-2">تعليمات البوت (Prompt)</label>
-                            <textarea id="systemPrompt" rows="4" 
-                                      class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition shadow-inner"
-                                      placeholder="أنت مساعد ذكي لمتجر..."></textarea>
-                        </div>
-                        <button onclick="saveSettings()" id="saveBtn" 
-                                class="w-full bg-gray-900 text-white py-4 rounded-xl font-bold hover:bg-black transition shadow-lg">
-                            حفظ الإعدادات
-                        </button>
-                    </div>
-                </div>
-
             </div>
         </div>
     </div>
+</div>
+
 
     <script>
     const storeId = "{{ store_id }}"; 
-    let recoveryChartInstance = null;
+let recoveryChartInstance = null;
+let processedEventIds = new Set();
 
-    async function loadDashboard() {
-        if (!storeId || storeId === "None" || storeId === "") {
-            console.error("Store ID is missing");
-            return;
-        }
-
-        try {
-            const response = await fetch(`/api/dashboard/${storeId}`);
-            if (!response.ok) throw new Error("Network response was not ok");
-            
-            const data = await response.json();
-
-            // تحديث الأرقام مع التأثير
-            const updateStat = (id, value) => {
-                const el = document.getElementById(id);
-                if (el.innerText !== String(value)) {
-                    el.innerText = value;
-                    el.classList.add('number-update');
-                    setTimeout(() => el.classList.remove('number-update'), 1500);
-                }
-            };
-
-            updateStat('botUsage', Number(data.bot_usage || 0).toLocaleString());
-            updateStat('abandonedCount', data.salla_stats?.abandoned_carts_count || 0);
-            
-            const totalSaved = data.summary?.total_revenue_saved || 0;
-            updateStat('recoveredRevenue', `${Number(totalSaved).toLocaleString()} ر.س`);
-
-            // تحديث الجدول
-            const chatTable = document.getElementById('recentChats');
-            if (data.recent_activity && data.recent_activity.length > 0) {
-                chatTable.innerHTML = data.recent_activity.map(chat => `
-                    <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
-                        <td class="p-4 font-bold text-xs" dir="ltr" style="text-align: right;">${chat.customers?.phone_number || 'عميل'}</td>
-                        <td class="p-4 text-xs text-gray-600 truncate max-w-[150px]">${chat.content}</td>
-                        <td class="p-4 text-center">
-                            <span class="px-3 py-1 rounded-full text-[10px] font-bold ${chat.role === 'assistant' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}">
-                                ${chat.role === 'assistant' ? '🤖 آلي' : '👤 عميل'}
-                            </span>
-                        </td>
-                    </tr>
-                `).join('');
-            } else {
-                chatTable.innerHTML = '<tr><td colspan="3" class="p-6 text-center text-gray-400 text-xs">لا توجد محادثات نشطة حالياً</td></tr>';
-            }
-
-            // رسم المخطط البياني
-            const ctx = document.getElementById('recoveryChart').getContext('2d');
-            if (recoveryChartInstance) {
-                recoveryChartInstance.destroy();
-            }
-
-            recoveryChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: data.charts_data?.labels || [], 
-                    datasets: [{
-                        label: 'أرباح مستردة (ر.س)',
-                        data: data.charts_data?.values || [], 
-                        borderColor: '#10b981',
-                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 4, 
-                        borderWidth: 3  
-                    }]
-                },
-                options: { 
-                    responsive: true, 
-                    maintainAspectRatio: false,
-                    layout: { padding: { left: 10, right: 20, top: 20, bottom: 10 } },
-                    plugins: { 
-                        legend: { display: false },
-                        tooltip: { backgroundColor: '#1f2937', titleFont: { family: 'Cairo' }, bodyFont: { family: 'Cairo' }, padding: 10, cornerRadius: 8, displayColors: false }
-                    },
-                    scales: {
-                        y: { beginAtZero: true, grid: { display: true, color: '#f3f4f6' }, ticks: { font: { family: 'Cairo', size: 10 }, color: '#9ca3af', padding: 10 } },
-                        x: { grid: { display: false }, ticks: { font: { family: 'Cairo', size: 10 }, color: '#9ca3af', padding: 5 } }
-                    }
-                }
-            });
-
-        } catch (error) { 
-            console.error("Dashboard Sync Error:", error); 
-        }
-    }
-/* --- CUSTOM_INDENTATION_8_OVER_4 --- */
-
-    /* --- FINAL_STABLE_VERSION_INDENT_4_8 --- */
-
-    async function refreshQR() {
-                const qrImage = document.getElementById('qr-image');
-                const qrBox = document.getElementById('qr-box');
-
-                // 1. تأمين الواجهة بصرياً
-                qrBox.classList.add("animate-pulse");
-                qrBox.style.opacity = "0.6";
-                qrImage.style.filter = "blur(8px)";
-
-                const fetchQR = async (attempt = 1) => {
-                        const controller = new AbortController();
-                        // رفع المهلة لـ 4 دقائق لتجنب رسائل "فشل الاتصال" الحمراء
-                        const timeoutId = setTimeout(() => controller.abort(), 240000);
-
-                        try {
-                                const response = await fetch(`/admin/get-qr/${storeId}`, { 
-                                        signal: controller.signal 
-                                });
-                                
-                                if (!response.ok) throw new Error("السيرفر لم يستجب");
-                                
-                                const data = await response.json();
-                                clearTimeout(timeoutId);
-
-                                if (data.status === "ready" && data.qr_code) {
-                                        qrImage.src = data.qr_code;
-                                        Toastify({ text: "✅ كود جديد جاهز", backgroundColor: "#10b981" }).showToast();
-                                        return true;
-                                } 
-                                else if (data.status === "connected") {
-                                        qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png"; 
-                                        Toastify({ text: "📱 متصل بالفعل", backgroundColor: "#3b82f6" }).showToast();
-                                        return true;
-                                }
-                                else {
-                                        throw new Error(data.message || "فشل التوليد");
-                                }
-
-                        } catch (err) {
-                                clearTimeout(timeoutId);
-                                // إذا فشل الاتصال (وهو ما تظهره صورك)، نعيد المحاولة تلقائياً بعد 3 ثوانٍ
-                                if (attempt < 2) {
-                                        console.log("🔄 إعادة محاولة الاتصال...");
-                                        await new Promise(r => setTimeout(r, 3000));
-                                        return fetchQR(attempt + 1);
-                                }
-
-                                qrImage.src = "https://via.placeholder.com/200?text=Timeout";
-                                Toastify({ 
-                                        text: "❌ " + (err.name === 'AbortError' ? "السيرفر بطيء جداً" : "فشل الاتصال بالسيرفر"), 
-                                        backgroundColor: "#ef4444" 
-                                }).showToast();
-                                return false;
-                        }
-                };
-
-                const success = await fetchQR();
-                
-                // 2. إعادة الواجهة لطبيعتها
-                qrBox.classList.remove("animate-pulse");
-                qrBox.style.opacity = "1";
-                qrImage.style.filter = "none";
+// 1. دالة رسم المخطط البياني (منفصلة للتنظيم)
+function renderRecoveryChart(chartsData) {
+    const ctx = document.getElementById('recoveryChart').getContext('2d');
+    if (recoveryChartInstance) {
+        recoveryChartInstance.destroy();
     }
 
+    recoveryChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: chartsData?.labels || [], 
+            datasets: [{
+                label: 'أرباح مستردة (ر.س)',
+                data: chartsData?.values || [], 
+                borderColor: '#10b981',
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                fill: true,
+                tension: 0.4,
+                pointRadius: 4, 
+                borderWidth: 3  
+            }]
+        },
+        options: { 
+            responsive: true, 
+            maintainAspectRatio: false,
+            plugins: { 
+                legend: { display: false },
+                tooltip: { backgroundColor: '#1f2937', titleFont: { family: 'Cairo' }, bodyFont: { family: 'Cairo' } }
+            },
+            scales: {
+                y: { beginAtZero: true, grid: { color: '#f3f4f6' }, ticks: { font: { family: 'Cairo', size: 10 } } },
+                x: { grid: { display: false }, ticks: { font: { family: 'Cairo', size: 10 } } }
+            }
+        }
+    });
+}
 
+// فتح وإغلاق النافذة
+function togglePlayground() {
+    const modal = document.getElementById('aiPlayground');
+    modal.classList.toggle('hidden');
+}
 
-    async function saveSettings() {
-        const btn = document.getElementById('saveBtn');
-        const payload = {
-            admin_phone: document.getElementById('adminPhone').value,
-            system_prompt: document.getElementById('systemPrompt').value
+// إرسال رسالة تجريبية إلى السيرفر
+async function sendTestMessage() {
+    const input = document.getElementById('testInput');
+    const chatBox = document.getElementById('playgroundChat');
+    const btn = document.getElementById('sendTestBtn');
+    const msg = input.value.trim();
+    const currentPrompt = document.getElementById('systemPrompt').value;
+
+    if (!msg) return;
+
+    // إضافة رسالة المستخدم للواجهة
+    chatBox.insertAdjacentHTML('beforeend', `
+        <div class="bg-gray-200 text-gray-800 p-3 rounded-2xl rounded-tl-none mr-8 text-xs self-end">
+            ${msg}
+        </div>
+    `);
+    
+    input.value = '';
+    btn.disabled = true;
+    document.getElementById('testBtnText').innerText = "...";
+
+    try {
+        // نرسل الرسالة مع الـ Prompt الحالي للسيرفر (نحتاج إنشاء هذا المسار في FastAPI)
+        const response = await fetch(`/admin/test-ai/${storeId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: msg, prompt: currentPrompt })
+        });
+
+        const data = await response.json();
+
+        // إضافة رد البوت للواجهة
+        chatBox.insertAdjacentHTML('beforeend', `
+            <div class="bg-blue-50 text-blue-700 p-3 rounded-2xl rounded-tr-none ml-8 text-xs">
+                ${data.reply || "عذراً، حدث خطأ في الرد."}
+            </div>
+        `);
+
+        // سكرول لأسفل
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+    } catch (err) {
+        Toastify({ text: "❌ فشل الاتصال بمحرك الذكاء", backgroundColor: "#ef4444" }).showToast();
+    } finally {
+        btn.disabled = false;
+        document.getElementById('testBtnText').innerText = "إرسال";
+    }
+}
+
+// تفعيل الإرسال عند الضغط على Enter
+document.getElementById('testInput')?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') sendTestMessage();
+});
+
+// 2. الدالة الرئيسية لتحديث البيانات
+async function loadDashboard() {
+    if (!storeId || storeId === "None" || storeId === "") return;
+
+    try {
+        const response = await fetch(`/api/dashboard/${storeId}`);
+        if (!response.ok) throw new Error("Network response was not ok");
+        const data = await response.json();
+
+        // تحديث الأرقام
+        const updateStat = (id, value) => {
+            const el = document.getElementById(id);
+            if (el && el.innerText !== String(value)) {
+                el.innerText = value;
+                el.classList.add('number-update');
+                setTimeout(() => el.classList.remove('number-update'), 1500);
+            }
         };
-        btn.innerText = "جاري الحفظ...";
-        btn.disabled = true;
-        try {
-            await fetch(`/admin/update-config/${storeId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            Toastify({ text: "✅ تم حفظ الإعدادات بنجاح", backgroundColor: "#10b981" }).showToast();
-        } catch (err) { 
-            Toastify({ text: "❌ فشل الحفظ", backgroundColor: "#ef4444" }).showToast();
-        } finally { 
-            btn.innerText = "حفظ الإعدادات"; 
-            btn.disabled = false; 
-        }
-    }
 
-    loadDashboard();
-    setInterval(loadDashboard, 60000);
+        updateStat('botUsage', Number(data.bot_usage || 0).toLocaleString());
+        updateStat('abandonedCount', data.salla_stats?.abandoned_carts_count || 0);
+        updateStat('recoveredRevenue', `${Number(data.summary?.total_revenue_saved || 0).toLocaleString()} ر.س`);
+
+        // معالجة الأحداث العاجلة
+        if (data.recent_activity && data.recent_activity.length > 0) {
+            const eventsContainer = document.getElementById('liveEvents');
+            data.recent_activity.slice(0, 3).reverse().forEach(event => {
+                const eventKey = event.id || (event.content + event.created_at);
+                if (!processedEventIds.has(eventKey)) {
+                    processedEventIds.add(eventKey);
+                    const eventHtml = `
+                        <div class="event-card p-3 rounded-xl text-xs event-slide-in mb-3 shadow-sm border border-gray-50 bg-white">
+                            <div class="flex justify-between items-start mb-1">
+                                <span class="font-bold ${event.role === 'assistant' ? 'text-blue-600' : 'text-green-600'}">
+                                    ${event.role === 'assistant' ? '🤖 رد آلي' : '👤 رسالة عميل'}
+                                </span>
+                                <span class="text-[9px] text-gray-400">الآن</span>
+                            </div>
+                            <p class="text-gray-600 line-clamp-2">${event.content}</p>
+                        </div>`;
+                    if (eventsContainer.innerHTML.includes('في انتظار')) eventsContainer.innerHTML = '';
+                    eventsContainer.insertAdjacentHTML('afterbegin', eventHtml);
+                    if (eventsContainer.children.length > 5) eventsContainer.lastChild.remove();
+                }
+            });
+        }
+
+        // تحديث جدول المحادثات
+        document.getElementById('recentChats').innerHTML = data.recent_activity.map(chat => `
+            <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
+                <td class="p-4 font-bold text-xs" dir="ltr" style="text-align: right;">${chat.customers?.phone_number || 'عميل'}</td>
+                <td class="p-4 text-xs text-gray-600 truncate max-w-[150px]">${chat.content}</td>
+                <td class="p-4 text-center">
+                    <span class="px-3 py-1 rounded-full text-[10px] font-bold ${chat.role === 'assistant' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'}">
+                        ${chat.role === 'assistant' ? '🤖 آلي' : '👤 عميل'}
+                    </span>
+                </td>
+            </tr>`).join('');
+
+        // تحديث المخطط
+        renderRecoveryChart(data.charts_data);
+
+    } catch (error) { console.error("Dashboard Sync Error:", error); }
+}
+
+// 3. دوال الربط والإعدادات
+async function refreshQR() {
+    const qrImage = document.getElementById('qr-image');
+    const qrBox = document.getElementById('qr-box');
+    qrBox.classList.add("animate-pulse");
+    qrImage.style.filter = "blur(8px)";
+
+    try {
+        const response = await fetch(`/admin/get-qr/${storeId}`);
+        const data = await response.json();
+        if (data.qr_code) qrImage.src = data.qr_code;
+        if (data.status === "connected") qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
+    } catch (err) {
+        Toastify({ text: "❌ فشل الاتصال بالسيرفر", backgroundColor: "#ef4444" }).showToast();
+    } finally {
+        qrBox.classList.remove("animate-pulse");
+        qrImage.style.filter = "none";
+    }
+}
+
+async function saveSettings() {
+    const btn = document.getElementById('saveBtn');
+    const payload = {
+        admin_phone: document.getElementById('adminPhone').value,
+        system_prompt: document.getElementById('systemPrompt').value
+    };
+    btn.innerText = "جاري الحفظ...";
+    btn.disabled = true;
+    try {
+        await fetch(`/admin/update-config/${storeId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        Toastify({ text: "✅ تم حفظ الإعدادات", backgroundColor: "#10b981" }).showToast();
+    } catch (err) { Toastify({ text: "❌ فشل الحفظ", backgroundColor: "#ef4444" }).showToast();
+    } finally { btn.innerText = "حفظ الإعدادات"; btn.disabled = false; }
+}
+
+// التشغيل الأولي والتحديث الدوري
+loadDashboard();
+setInterval(loadDashboard, 60000);
+
     </script>
+    <div id="aiPlayground" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col h-[600px] fade-in">
+        <div class="p-6 border-b flex justify-between items-center bg-gray-50">
+            <div>
+                <h3 class="text-xl font-bold text-gray-900">مختبر الذكاء 🧪</h3>
+                <p class="text-[10px] text-gray-500">جرب التعليمات الجديدة قبل الحفظ</p>
+            </div>
+            <button onclick="togglePlayground()" class="text-gray-400 hover:text-red-500 transition-colors text-2xl">&times;</button>
+        </div>
+
+        <div id="playgroundChat" class="flex-grow p-6 overflow-y-auto space-y-4 bg-gray-50/30 custom-table-container">
+            <div class="bg-blue-50 text-blue-700 p-3 rounded-2xl rounded-tr-none ml-8 text-xs">
+                مرحباً! أنا البوت الخاص بك. سأقوم بالرد عليك الآن بناءً على الـ Prompt المكتوب في الإعدادات. جرب سؤالي عن أي شيء!
+            </div>
+        </div>
+
+        <div class="p-4 border-t bg-white">
+            <div class="flex gap-2">
+                <input type="text" id="testInput" placeholder="اكتب رسالة تجريبية..." 
+                       class="flex-grow p-3 bg-gray-100 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                <button onclick="sendTestMessage()" id="sendTestBtn" class="bg-blue-600 text-white px-5 rounded-xl hover:bg-blue-700 transition shadow-md">
+                    <span id="testBtnText">إرسال</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 </body>
 </html>
