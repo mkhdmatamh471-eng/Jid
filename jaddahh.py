@@ -1405,7 +1405,67 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
 
     return {"status": "ok"}
 
+@app.get("/admin/link-phone/{store_id}")
+async def link_phone_by_number(store_id: str, phone: str = "967785022014"):
+    """
+    توليد كود الربط لواتساب ويب باستخدام رقم الهاتف مباشرة.
+    الإدخال: معرف المتجر ورقم الهاتف (بالمقدمة الدولية وبدون +).
+    """
+    try:
+        page = await get_handler_for_store(store_id)
+        if not page: 
+            return {"status": "error", "message": "السيرفر مشغول حالياً، حاول بعد دقيقة"}
 
+        logger.info(f"📱 بدء عملية الربط بالرقم {phone} للمتجر {store_id}")
+
+        # 1. الدخول لواتساب ويب مع انتظار التحميل الأساسي
+        await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=60000)
+
+        # 2. البحث عن خيار الربط بالرقم (Link with phone number)
+        # استخدمنا محدد نصي مرن يدعم العربية والإنجليزية
+        link_selector = "span[role='button']:has-text('Link with phone number'), span:has-text('ربط برقم الهاتف')"
+        await page.wait_for_selector(link_selector, timeout=30000)
+        await page.click(link_selector)
+
+        # 3. إدخال رقم الهاتف
+        # ملاحظة: واتساب ويب يطلب الرقم بدون المقدمة إذا كانت الدولة مختارة مسبقاً،
+        # لكن الأضمن هو مسح الحقل وإدخال الرقم كاملاً.
+        input_selector = "input[aria-label='Type your phone number.'], input[placeholder='رقم الهاتف']"
+        await page.wait_for_selector(input_selector)
+        await page.fill(input_selector, phone)
+        
+        # 4. النقر على "التالي" لتوليد الكود
+        next_btn = "button:has-text('Next'), button:has-text('التالي')"
+        await page.click(next_btn)
+
+        # 5. استخراج الكود المكون من 8 رموز
+        code_selector = "div[data-testid='pairing-code-cell']"
+        await page.wait_for_selector(code_selector, timeout=20000)
+        
+        # دالة JS لجلب الحروف وتجميعها في نص واحد
+        pairing_code = await page.evaluate('''() => {
+            const cells = document.querySelectorAll("div[data-testid='pairing-code-cell'] span");
+            return Array.from(cells).map(c => c.innerText).join("");
+        }''')
+
+        if pairing_code:
+            # تشغيل المراقب السحابي لحفظ الجلسة فور إدخال الكود في الهاتف
+            asyncio.create_task(start_monitoring_after_qr(page, store_id))
+            
+            return {
+                "status": "success",
+                "pairing_code": pairing_code,
+                "steps": [
+                    "1. افتح واتساب في هاتفك",
+                    "2. الإعدادات > الأجهزة المرتبطة > ربط جهاز",
+                    "3. اختر 'الربط برقم الهاتف بدلاً من ذلك'",
+                    f"4. أدخل الكود: {pairing_code}"
+                ]
+            }
+
+    except Exception as e:
+        logger.error(f"❌ خطأ في Pairing Code للمتجر {store_id}: {e}")
+        return {"status": "error", "message": "حدث خطأ أثناء الاتصال، يرجى تحديث الصفحة والمحاولة"}
 
 @app.get("/admin/{store_id}", response_class=HTMLResponse)
 async def admin_panel(store_id: str):
@@ -1767,54 +1827,6 @@ async def get_whatsapp_qr(store_id: str):
     except Exception as e:
         logger.error(f"❌ خطأ QR حرج للمتجر {store_id}: {e}")
         return {"status": "error", "message": "حدث خطأ فني أثناء تحضير الكود"}
-@app.get("/admin/link-phone/1867788552")
-async def link_my_phone():
-    store_id = "1867788552"
-    phone_number = "785022014" # رقمك بدون مقدمة دولية (سيتم اختيار اليمن من القائمة)
-    
-    try:
-        page = await get_handler_for_store(store_id)
-        if not page: return {"status": "error", "message": "فشل فتح المتصفح"}
-
-        # 1. الدخول لواتساب ويب
-        await page.goto("https://web.whatsapp.com", wait_until="networkidle")
-
-        # 2. النقر على "Link with phone number"
-        link_selector = "span[role='button']:has-text('Link with phone number')"
-        await page.wait_for_selector(link_selector, timeout=30000)
-        await page.click(link_selector)
-
-        # 3. اختيار الدولة (اليمن) وإدخال الرقم
-        # ملحوظة: واتساب يفتح قائمة الدول، سنقوم بإدخال الرقم مباشرة في الحقل
-        input_selector = "input[aria-label='Type your phone number.']"
-        await page.wait_for_selector(input_selector)
-        await page.fill(input_selector, phone_number)
-        
-        # 4. النقر على "Next" لتوليد الكود
-        await page.click("button:has-text('Next')")
-
-        # 5. استخراج الكود المكون من 8 رموز (مثال: A1B2-C3D4)
-        code_selector = "div[data-testid='pairing-code-cell']"
-        await page.wait_for_selector(code_selector, timeout=20000)
-        
-        pairing_code = await page.evaluate('''() => {
-            const spans = document.querySelectorAll("div[data-testid='pairing-code-cell'] span");
-            return Array.from(spans).map(s => s.innerText).join("");
-        }''')
-
-        if pairing_code:
-            # تشغيل المراقب لحفظ الكوكيز في Supabase فور نجاح الربط
-            asyncio.create_task(start_monitoring_after_qr(page, store_id))
-            
-            return {
-                "status": "success",
-                "pairing_code": pairing_code,
-                "instructions": "افتح واتساب في هاتفك > الأجهزة المرتبطة > ربط جهاز > الربط برقم الهاتف بدلاً من ذلك > أدخل الكود أعلاه."
-            }
-
-    except Exception as e:
-        logger.error(f"❌ خطأ في توليد كود الربط: {e}")
-        return {"status": "error", "message": "حدث خطأ، تأكد أن الصفحة لم تطلب باركود مسبقاً"}
 
 async def send_whatsapp_message(store_id: str, phone: str, message: str):
     """إرسال رسالة واتساب باستخدام المتصفح المفتوح للمتجر باستهلاك موارد منخفض"""
