@@ -1606,25 +1606,47 @@ async def update_config(store_id: str, settings: dict):
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
+    headers = {"apikey": WHATSAPP_API_KEY} # تأكد من تعريف المفتاح في الإعدادات
     try:
-        async with httpx.AsyncClient() as client:
-            # طلب الباركود من سيرفر Baileys/Evolution
-            response = await client.get(f"{WHATSAPP_URL}/instance/connect/{store_id}")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            # 1. محاولة جلب كود الـ QR
+            response = await client.get(
+                f"{WHATSAPP_URL}/instance/connect/{store_id}", 
+                headers=headers
+            )
+            
+            # إذا كان الرد 500، فهذا يعني غالباً أن الـ Instance غير موجودة
+            if response.status_code == 500:
+                # محاولة إنشاء الـ Instance تلقائياً
+                create_res = await client.post(
+                    f"{WHATSAPP_URL}/instance/create",
+                    json={"instanceName": store_id, "token": store_id, "qrcode": True},
+                    headers=headers
+                )
+                return {"status": "processing", "message": "جاري تهيئة البوت، يرجى إعادة المحاولة خلال ثوانٍ..."}
+
             data = response.json()
 
-            if data.get("base64"): # إذا أعاد السيرفر الصورة بصيغة base64
+            # 2. التحقق من وجود الصورة
+            if data.get("base64"): 
                 return {
                     "status": "ready",
                     "qr_code": data["base64"], 
                     "message": "امسح الكود للربط"
                 }
-            elif data.get("instance", {}).get("state") == "open":
+            
+            # 3. التحقق إذا كان الرقم مرتباً بالفعل
+            instance_data = data.get("instance", {})
+            if instance_data.get("state") == "open" or data.get("status") == "CONNECTED":
                 return {"status": "connected", "message": "متصل بالفعل ✅"}
             
-            return {"status": "error", "message": "فشل توليد الكود"}
-    except Exception as e:
-        return {"status": "error", "message": "سيرفر الواتساب لا يستجيب"}
+            return {"status": "error", "message": "فشل توليد الكود، تأكد من إعدادات السيرفر"}
 
+    except httpx.ReadTimeout:
+        return {"status": "error", "message": "استغرق السيرفر وقتاً طويلاً في الاستجابة"}
+    except Exception as e:
+        print(f"Error: {str(e)}") # للديبيج
+        return {"status": "error", "message": "سيرفر الواتساب لا يستجيب حالياً"}
 
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
