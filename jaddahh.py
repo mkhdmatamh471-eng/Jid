@@ -706,35 +706,35 @@ async def groq_analyze_intent(message: str) -> dict:
             return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
 
 async def groq_generate_reply(history: List[Dict], context: str, system_prompt: str) -> str:
-    """توليد رد بشري وذكي بناءً على السياق وتاريخ المحادثة"""
+    """توليد رد بشري ذكي مع محاكاة التأخير البشري وتصحيح الموديل"""
     url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    # التأكد من جلب المفتاح بشكل صحيح
+    api_key = os.getenv("GROQ_API_KEY") 
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     
-    # تحسين السياق: إذا لم يتوفر سياق (مثل رقم الطلب)، نخبر البوت بذلك لكي لا يؤلف معلومات
-    extra_context = context if context else "لا توجد بيانات طلب محددة حالياً. أجب بناءً على معلومات المتجر العامة فقط."
-    
+    # تحسين السياق
+    extra_context = context if context else "لا توجد بيانات طلب محددة. أجب بناءً على معلومات المتجر العامة."
     full_system = f"{system_prompt}\n\n[سياق النظام الحالي]:\n{extra_context}"
     
-    # التأكد من أن التاريخ لا يتجاوز عدداً معيناً لتوفير التكلفة وسرعة الرد
-    compact_history = history[-6:] # آخر 6 رسائل تكفي للحفاظ على سياق المحادثة
-    
+    # تقليص التاريخ لسرعة الاستجابة
+    compact_history = history[-6:]
     messages = [{"role": "system", "content": full_system}] + compact_history
 
-    # --- محاكاة السلوك البشري (Human-like Delay) ---
-    # البشر يحتاجون وقتاً للقراءة والكتابة، سننتظر بين 2 إلى 4 ثوانٍ قبل طلب الرد
-    await asyncio.sleep(random.uniform(2.0, 4.0))
+    # 1. محاكاة وقت القراءة (تأخير قبل إرسال الطلب)
+    await asyncio.sleep(random.uniform(1.5, 3.0))
 
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
                 url, 
                 json={
-                    "model": "groq-1", 
+                    "model": "llama3-8b-8192",  # تم التصحيح من groq-1 إلى اسم موديل حقيقي
                     "messages": messages,
-                    "temperature": 0.7, # رفعنا الحرارة قليلاً ليكون الكلام بشرياً وليس آلياً جامداً
+                    "temperature": 0.7,
                     "max_tokens": 500
                 }, 
                 headers=headers,
@@ -744,17 +744,18 @@ async def groq_generate_reply(history: List[Dict], context: str, system_prompt: 
             if response.status_code == 200:
                 reply = response.json()["choices"][0]["message"]["content"]
                 
-                # لمسة أخيرة: محاكاة وقت "الكتابة" بناءً على طول الرد
-                typing_time = len(reply) * 0.05 # 0.05 ثانية لكل حرف
-                await asyncio.sleep(min(typing_time, 3.0)) # لا ننتظر أكثر من 3 ثوانٍ إضافية
+                # 2. محاكاة وقت "الكتابة" بناءً على طول الرد
+                typing_time = len(reply) * 0.04 
+                await asyncio.sleep(min(typing_time, 2.5)) # لا يتجاوز التأخير 2.5 ثانية
                 
                 return reply
             else:
-                logger.error(f"groq API Error: {response.status_code} - {response.text}")
+                # تسجيل الخطأ الحقيقي في الـ Logs لمعرفة السبب (مفتاح خطأ، رصيد منتهي، إلخ)
+                logger.error(f"❌ Groq API Error: {response.status_code} - {response.text}")
                 return "المعذرة منك، يبدو أن هناك ضغط بسيط على النظام. كيف أقدر أساعدك بشيء آخر؟"
                 
         except Exception as e:
-            logger.error(f"Error in groq_generate_reply: {str(e)}")
+            logger.error(f"❌ Critical Error in AI module: {str(e)}")
             return "يا هلا بك، حصل عندي عطل بسيط. ممكن تعيد إرسال رسالتك؟"
 
 # --- خدمات واتساب (WhatsApp Business API) ---
@@ -1169,25 +1170,6 @@ async def process_customer_request(store_id: str, phone: str, text: str):
     except Exception as e:
         logger.error(f"Error in process_customer_request: {str(e)}")
 
-async def groq_generate_reply(history: list, context: str, system_prompt: str) -> str:
-    """توليد رد ذكي وبشري فوري"""
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"}
-    
-    full_prompt = f"{system_prompt}\n\nContext: {context}"
-    messages = [{"role": "system", "content": full_prompt}] + history
-
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.post(url, json={
-                "model": "llama3-8b-8192", # نستخدم 8b هنا لسرعة مذهلة في الردود
-                "messages": messages,
-                "temperature": 0.7
-            }, headers=headers)
-            return r.json()["choices"][0]["message"]["content"]
-        except:
-            return "يا هلا بك، كيف أقدر أساعدك اليوم؟"
-
 
 
 @app.api_route("/webhook/salla", methods=["GET", "POST"]) # تعديل هنا للسماح بـ GET و POST
@@ -1585,47 +1567,31 @@ async def update_config(store_id: str, settings: dict):
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
-    headers = {"apikey": WHATSAPP_API_KEY} # تأكد من تعريف المفتاح في الإعدادات
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            # 1. محاولة جلب كود الـ QR
-            response = await client.get(
-                f"{WHATSAPP_URL}/instance/connect/{store_id}", 
-                headers=headers
-            )
+    headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        try:
+            # محاولة جلب حالة الاتصال أولاً
+            status_resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{store_id}", headers=headers)
             
-            # إذا كان الرد 500، فهذا يعني غالباً أن الـ Instance غير موجودة
-            if response.status_code == 500:
-                # محاولة إنشاء الـ Instance تلقائياً
-                create_res = await client.post(
-                    f"{WHATSAPP_URL}/instance/create",
-                    json={"instanceName": store_id, "token": store_id, "qrcode": True},
-                    headers=headers
-                )
-                return {"status": "processing", "message": "جاري تهيئة البوت، يرجى إعادة المحاولة خلال ثوانٍ..."}
+            if status_resp.status_code == 404:
+                # إذا كانت الغرفة غير موجودة، ننشئها
+                await client.post(f"{WHATSAPP_URL}/instance/create", 
+                                 json={"instanceName": store_id, "qrcode": True}, headers=headers)
+                return {"status": "processing", "message": "جاري إنشاء الجلسة.. أعد المحاولة"}
 
-            data = response.json()
-
-            # 2. التحقق من وجود الصورة
-            if data.get("base64"): 
-                return {
-                    "status": "ready",
-                    "qr_code": data["base64"], 
-                    "message": "امسح الكود للربط"
-                }
+            # جلب كود QR
+            qr_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{store_id}", headers=headers)
+            data = qr_resp.json()
             
-            # 3. التحقق إذا كان الرقم مرتباً بالفعل
-            instance_data = data.get("instance", {})
-            if instance_data.get("state") == "open" or data.get("status") == "CONNECTED":
-                return {"status": "connected", "message": "متصل بالفعل ✅"}
+            if data.get("base64"):
+                return {"status": "ready", "qr_code": data["base64"]}
             
-            return {"status": "error", "message": "فشل توليد الكود، تأكد من إعدادات السيرفر"}
-
-    except httpx.ReadTimeout:
-        return {"status": "error", "message": "استغرق السيرفر وقتاً طويلاً في الاستجابة"}
-    except Exception as e:
-        print(f"Error: {str(e)}") # للديبيج
-        return {"status": "error", "message": "سيرفر الواتساب لا يستجيب حالياً"}
+            if data.get("status") == "CONNECTED":
+                return {"status": "connected", "message": "متصل بنجاح ✅"}
+                
+            return {"status": "error", "message": "تأكد من تشغيل Evolution API"}
+        except Exception as e:
+            return {"status": "error", "message": "فشل الاتصال بالسيرفر الداخلي"}
 
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
