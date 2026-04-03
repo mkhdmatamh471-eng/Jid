@@ -398,20 +398,61 @@ async function loadDashboard() {
 async function refreshQR() {
     const qrImage = document.getElementById('qr-image');
     const qrBox = document.getElementById('qr-box');
+    
+    // بدء تأثير التحميل والبلاغ البصري
     qrBox.classList.add("animate-pulse");
     qrImage.style.filter = "blur(8px)";
 
-    try {
-        const response = await fetch(`/admin/get-qr/${storeId}`);
-        const data = await response.json();
-        if (data.qr_code) qrImage.src = data.qr_code;
-        if (data.status === "connected") qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
-    } catch (err) {
-        Toastify({ text: "❌ فشل الاتصال بالسيرفر", backgroundColor: "#ef4444" }).showToast();
-    } finally {
-        qrBox.classList.remove("animate-pulse");
-        qrImage.style.filter = "none";
+    // دالة مساعدة لعمل مهلة زمنية (Wait)
+    const delay = ms => new Promise(res => setTimeout(res, ms));
+
+    let attempts = 0;
+    const maxAttempts = 3; // عدد محاولات إعادة الطلب في حال الفشل
+
+    async function fetchWithRetry() {
+        try {
+            // إضافة مهلة بسيطة (مثلاً 2 ثانية) قبل أول طلب لضمان استقرار السيرفر
+            if (attempts === 0) await delay(2000); 
+
+            const response = await fetch(`/admin/get-qr/${storeId}`);
+            
+            if (!response.ok) throw new Error("Server not ready");
+
+            const data = await response.json();
+
+            if (data.qr_code) {
+                qrImage.src = data.qr_code;
+                return true; // نجاح
+            } 
+            
+            if (data.status === "connected") {
+                qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
+                return true; // نجاح
+            }
+
+            // إذا لم يعد الباركود بعد، قد يكون السيرفر لا يزال ينشئ الجلسة
+            if (attempts < maxAttempts) {
+                attempts++;
+                await delay(200000); // انتظر 3 ثوانٍ قبل المحاولة التالية
+                return await fetchWithRetry();
+            }
+
+        } catch (err) {
+            if (attempts < maxAttempts) {
+                attempts++;
+                await delay(3000);
+                return await fetchWithRetry();
+            }
+            Toastify({ text: "❌ فشل الاتصال بالسيرفر، جرب مرة أخرى", backgroundColor: "#ef4444" }).showToast();
+        }
+        return false;
     }
+
+    await fetchWithRetry();
+
+    // إنهاء تأثير التحميل
+    qrBox.classList.remove("animate-pulse");
+    qrImage.style.filter = "none";
 }
 
 async function saveSettings() {
