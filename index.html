@@ -23,7 +23,6 @@
             scroll-behavior: smooth;
         }
 
-        /* 1. تأثير الزجاج المطور (Glassmorphism) */
         .glass-card {
             background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(10px);
@@ -36,33 +35,28 @@
             border-color: rgba(16, 185, 129, 0.2);
         }
 
-        /* 2. تحسين خلفية الـ QR وتدرج الألوان */
         .qr-gradient { 
             background: radial-gradient(circle at top left, #ffffff, #f1f5f9);
             position: relative;
             overflow: hidden;
         }
         
-        /* 3. تأثير "النبض الرقمي" عند تحديث البيانات */
         .number-update { animation: pulse-green 1.5s cubic-bezier(0.4, 0, 0.6, 1); }
         @keyframes pulse-green {
             0%, 100% { color: inherit; transform: scale(1); }
             50% { color: var(--primary); transform: scale(1.1); font-weight: 900; }
         }
 
-        /* 4. تخصيص شريط التمرير (Scrollbar) */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
 
-        /* 5. استجابة الجداول (Mobile Optimized) */
         .custom-table-container {
             mask-image: linear-gradient(to right, black 95%, transparent);
             -webkit-mask-image: linear-gradient(to right, black 95%, transparent);
         }
 
-        /* 6. أنيميشن التحميل (Skeleton Loader) */
         .skeleton-box {
             background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
             background-size: 200% 100%;
@@ -76,33 +70,36 @@
             100% { background-position: -200% 0; }
         }
         
-        /* تأثير التلاشي الناعم للكروت */
         .fade-in { animation: fadeIn 0.8s ease-in-out; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        
         .event-slide-in {
-    animation: slideInRight 0.5s ease-out forwards;
-}
+            animation: slideInRight 0.5s ease-out forwards;
+        }
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
 
-@keyframes slideInRight {
-    from { opacity: 0; transform: translateX(20px); }
-    to { opacity: 1; transform: translateX(0); }
-}
+        .event-card {
+            border-right: 3px solid #10b981;
+            background: linear-gradient(to left, rgba(16, 185, 129, 0.05), transparent);
+        }
 
-.event-card {
-    border-right: 3px solid #10b981;
-    background: linear-gradient(to left, rgba(16, 185, 129, 0.05), transparent);
-}
-
-
+        /* تحسين مظهر كود الربط (Pairing Code) */
+        .pairing-code-box {
+            letter-spacing: 0.3em;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
     </style>
 </head>
 
 <body class="bg-gray-50 text-gray-800">
 
-    <div class="min-h-screen p-4 md:p-8">
+<div class="min-h-screen p-4 md:p-8">
     <header class="max-w-6xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-center gap-4 fade-in">
         <div>
             <h1 class="text-3xl font-bold text-gray-900">لوحة تحكم البوت الذكي 🤖</h1>
@@ -151,7 +148,6 @@
     </div>
 
     <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8 fade-in">
-        
         <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6 h-fit">
             <div class="md:col-span-2 glass-card rounded-3xl border border-gray-100 overflow-hidden flex flex-col h-[500px]">
                 <div class="p-6 border-b border-gray-50 flex justify-between items-center bg-white/50">
@@ -160,7 +156,7 @@
                 </div>
                 <div class="overflow-y-auto custom-table-container">
                     <table class="w-full text-right">
-                        <thead class="bg-gray-50 text-gray-500 text-[10px] sticky top-0">
+                        <thead class="bg-gray-50 text-gray-500 text-[10px] sticky top-0 z-10">
                             <tr>
                                 <th class="p-4">العميل</th>
                                 <th class="p-4">آخر رسالة</th>
@@ -192,15 +188,48 @@
         <div class="space-y-8">
             <div class="glass-card p-6 rounded-3xl border border-gray-100 text-center">
                 <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
-                <div id="qr-box" class="qr-gradient flex items-center justify-center w-64 h-64 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden">
-                    <img id="qr-image" src="https://via.placeholder.com/200?text=Scan+QR" class="max-w-[85%] max-h-[85%] object-contain rounded-lg shadow-sm" alt="QR Code">
+                
+                <div class="flex bg-gray-100 rounded-lg p-1 mb-6">
+                    <button id="tabQr" onclick="switchLinkMode('qr')" class="flex-1 py-2 text-sm font-bold rounded-md bg-white shadow-sm text-gray-900 transition">باركود (QR)</button>
+                    <button id="tabCode" onclick="switchLinkMode('code')" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-500 hover:text-gray-900 transition">كود الربط</button>
                 </div>
-                <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
-                    افتح واتساب > الأجهزة المرتبطة > ربط جهاز ثم امسح الكود.
-                </p>
-                <button onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm">
-                    توليد كود جديد 🔄
-                </button>
+
+                <div id="modeQr">
+                    <div id="qr-box" class="qr-gradient flex items-center justify-center w-56 h-56 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden">
+                        <img id="qr-image" src="https://via.placeholder.com/200?text=Scan+QR" class="max-w-[85%] max-h-[85%] object-contain rounded-lg shadow-sm" alt="QR Code">
+                    </div>
+                    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
+                        افتح واتساب > الأجهزة المرتبطة > ربط جهاز ثم امسح الكود.
+                    </p>
+                    <button onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm">
+                        توليد كود جديد 🔄
+                    </button>
+                </div>
+
+                <div id="modeCode" class="hidden">
+                    <p class="text-[11px] text-gray-500 mb-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
+                        أدخل الرقم الذي عليه الواتساب المراد ربطه للحصول على الكود المكون من 8 أحرف.
+                    </p>
+                    <div class="mb-4 text-right">
+                        <label class="block text-xs font-semibold text-gray-700 mb-1">رقم الواتساب مع رمز الدولة</label>
+                        <input type="text" id="waPairingPhone" placeholder="9665xxxxxxxx" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-left" dir="ltr">
+                    </div>
+                    
+                    <button onclick="requestPairingCode()" id="btnPairing" class="w-full py-3 mb-4 text-green-600 text-sm font-bold border border-green-100 bg-green-50 rounded-xl hover:bg-green-100 transition shadow-sm">
+                        طلب كود الربط 🔑
+                    </button>
+
+                    <div id="pairingCodeDisplay" class="hidden">
+                        <p class="text-[10px] text-gray-500 mb-1">أدخل هذا الكود في تطبيق الواتساب:</p>
+                        <div class="bg-gray-900 text-white p-4 rounded-2xl flex items-center justify-center gap-3">
+                            <span id="pairingCodeValue" class="text-3xl font-black pairing-code-box tracking-widest">---- ----</span>
+                            <button onclick="copyPairingCode()" class="bg-white/20 hover:bg-white/30 p-2 rounded-lg transition" title="نسخ الكود">
+                                📋
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
             </div>
 
             <div class="glass-card p-6 rounded-3xl border border-gray-100">
@@ -217,22 +246,49 @@
                     <button onclick="saveSettings()" id="saveBtn" class="w-full bg-gray-900 text-white py-4 rounded-xl font-bold hover:bg-black transition shadow-lg">
                         حفظ الإعدادات
                     </button>
-                    <button onclick="togglePlayground()" class="bg-blue-50 text-blue-600 px-6 rounded-xl font-bold hover:bg-blue-100 transition border border-blue-100 text-sm flex items-center gap-2">
-                تجربة 🧪
-            </button>
+                    <button onclick="togglePlayground()" class="w-full bg-blue-50 text-blue-600 py-3 rounded-xl font-bold hover:bg-blue-100 transition border border-blue-100 text-sm flex items-center justify-center gap-2 mt-2">
+                        تجربة 🧪
+                    </button>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
+<div id="aiPlayground" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4 transition-opacity">
+    <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col h-[600px] fade-in">
+        <div class="p-6 border-b flex justify-between items-center bg-gray-50">
+            <div>
+                <h3 class="text-xl font-bold text-gray-900">مختبر الذكاء 🧪</h3>
+                <p class="text-[10px] text-gray-500">جرب التعليمات الجديدة قبل الحفظ</p>
+            </div>
+            <button onclick="togglePlayground()" class="text-gray-400 hover:text-red-500 transition-colors text-2xl">&times;</button>
+        </div>
 
-    <script>
-    const storeId = "{{ store_id }}"; 
+        <div id="playgroundChat" class="flex-grow p-6 overflow-y-auto space-y-4 bg-gray-50/30 custom-table-container">
+            <div class="bg-blue-50 text-blue-700 p-3 rounded-2xl rounded-tr-none ml-8 text-xs">
+                مرحباً! أنا البوت الخاص بك. سأقوم بالرد عليك الآن بناءً على الـ Prompt المكتوب في الإعدادات. جرب سؤالي عن أي شيء!
+            </div>
+        </div>
+
+        <div class="p-4 border-t bg-white">
+            <div class="flex gap-2">
+                <input type="text" id="testInput" placeholder="اكتب رسالة تجريبية..." 
+                       class="flex-grow p-3 bg-gray-100 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                <button onclick="sendTestMessage()" id="sendTestBtn" class="bg-blue-600 text-white px-5 rounded-xl hover:bg-blue-700 transition shadow-md">
+                    <span id="testBtnText">إرسال</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const storeId = "{{ store_id }}"; 
 let recoveryChartInstance = null;
 let processedEventIds = new Set();
 
-// 1. دالة رسم المخطط البياني (منفصلة للتنظيم)
+/* --- 1. دوال الواجهة العامة والمخطط --- */
 function renderRecoveryChart(chartsData) {
     const ctx = document.getElementById('recoveryChart').getContext('2d');
     if (recoveryChartInstance) {
@@ -269,13 +325,157 @@ function renderRecoveryChart(chartsData) {
     });
 }
 
-// فتح وإغلاق النافذة
+function showToast(msg, isSuccess = true) {
+    Toastify({ 
+        text: msg, 
+        backgroundColor: isSuccess ? "#10b981" : "#ef4444",
+        gravity: "bottom",
+        position: "center",
+        style: { borderRadius: "10px", fontSize: "12px", fontFamily: "Cairo" }
+    }).showToast();
+}
+
+/* --- 2. دوال ربط الواتساب (QR Code و Pairing Code) --- */
+
+// التبديل بين وضع الباركود ووضع كود الربط
+function switchLinkMode(mode) {
+    const tabQr = document.getElementById('tabQr');
+    const tabCode = document.getElementById('tabCode');
+    const modeQr = document.getElementById('modeQr');
+    const modeCode = document.getElementById('modeCode');
+
+    if (mode === 'qr') {
+        tabQr.classList.replace('text-gray-500', 'text-gray-900');
+        tabQr.classList.replace('bg-transparent', 'bg-white');
+        tabQr.classList.add('shadow-sm');
+        
+        tabCode.classList.replace('text-gray-900', 'text-gray-500');
+        tabCode.classList.remove('bg-white', 'shadow-sm');
+
+        modeQr.classList.remove('hidden');
+        modeCode.classList.add('hidden');
+    } else {
+        tabCode.classList.replace('text-gray-500', 'text-gray-900');
+        tabCode.classList.replace('bg-transparent', 'bg-white');
+        tabCode.classList.add('shadow-sm');
+        
+        tabQr.classList.replace('text-gray-900', 'text-gray-500');
+        tabQr.classList.remove('bg-white', 'shadow-sm');
+
+        modeCode.classList.remove('hidden');
+        modeQr.classList.add('hidden');
+    }
+}
+
+// توليد QR Code
+async function refreshQR() {
+    const qrImage = document.getElementById('qr-image');
+    const qrBox = document.getElementById('qr-box');
+    qrBox.classList.add("animate-pulse");
+    qrImage.style.filter = "blur(8px)";
+    const delay = ms => new Promise(res => setTimeout(res, ms));
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    async function fetchWithRetry() {
+        try {
+            if (attempts === 0) await delay(2000); 
+            const response = await fetch(`/admin/get-qr/${storeId}`);
+            if (!response.ok) throw new Error("Server not ready");
+            const data = await response.json();
+
+            if (data.qr_code) {
+                qrImage.src = data.qr_code;
+                return true;
+            } 
+            if (data.status === "connected") {
+                qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
+                return true;
+            }
+            if (attempts < maxAttempts) {
+                attempts++;
+                await delay(3000); 
+                return await fetchWithRetry();
+            }
+        } catch (err) {
+            if (attempts < maxAttempts) {
+                attempts++;
+                await delay(3000);
+                return await fetchWithRetry();
+            }
+            showToast("❌ فشل الاتصال بالسيرفر، جرب مرة أخرى", false);
+        }
+        return false;
+    }
+
+    await fetchWithRetry();
+    qrBox.classList.remove("animate-pulse");
+    qrImage.style.filter = "none";
+}
+
+// طلب كود الربط (Pairing Code)
+async function requestPairingCode() {
+    const phoneInput = document.getElementById('waPairingPhone').value.trim();
+    const btn = document.getElementById('btnPairing');
+    const displayContainer = document.getElementById('pairingCodeDisplay');
+    const codeValueEl = document.getElementById('pairingCodeValue');
+
+    if (!phoneInput) {
+        showToast("⚠️ يرجى إدخال رقم الواتساب أولاً", false);
+        return;
+    }
+
+    btn.innerText = "جاري الطلب...";
+    btn.disabled = true;
+
+    try {
+        // تأكد من وجود هذا الـ Endpoint في الـ Backend (FastAPI) الخاص بك
+        const response = await fetch(`/admin/get-pairing-code/${storeId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone_number: phoneInput })
+        });
+
+        if (!response.ok) throw new Error("فشل توليد الكود");
+        
+        const data = await response.json();
+
+        if (data.pairing_code) {
+            // إضافة مسافة لتسهيل القراءة (مثال: ABCD EFGH)
+            const code = data.pairing_code;
+            const formattedCode = code.match(/.{1,4}/g)?.join(' ') || code;
+            
+            codeValueEl.innerText = formattedCode;
+            displayContainer.classList.remove('hidden');
+            showToast("✅ تم توليد كود الربط بنجاح");
+        } else {
+            throw new Error("الكود غير متواجد في الاستجابة");
+        }
+    } catch (err) {
+        showToast("❌ حدث خطأ، تأكد من الرقم والمحاولة مرة أخرى", false);
+        console.error("Pairing Code Error:", err);
+    } finally {
+        btn.innerText = "طلب كود الربط 🔑";
+        btn.disabled = false;
+    }
+}
+
+// نسخ كود الربط للحافظة
+function copyPairingCode() {
+    const code = document.getElementById('pairingCodeValue').innerText.replace(/\s+/g, '');
+    navigator.clipboard.writeText(code).then(() => {
+        showToast("📋 تم نسخ الكود!");
+    }).catch(err => {
+        console.error('فشل النسخ: ', err);
+    });
+}
+
+/* --- 3. مختبر الذكاء والإعدادات --- */
 function togglePlayground() {
     const modal = document.getElementById('aiPlayground');
     modal.classList.toggle('hidden');
 }
 
-// إرسال رسالة تجريبية إلى السيرفر
 async function sendTestMessage() {
     const input = document.getElementById('testInput');
     const chatBox = document.getElementById('playgroundChat');
@@ -285,7 +485,6 @@ async function sendTestMessage() {
 
     if (!msg) return;
 
-    // إضافة رسالة المستخدم للواجهة
     chatBox.insertAdjacentHTML('beforeend', `
         <div class="bg-gray-200 text-gray-800 p-3 rounded-2xl rounded-tl-none mr-8 text-xs self-end">
             ${msg}
@@ -297,7 +496,6 @@ async function sendTestMessage() {
     document.getElementById('testBtnText').innerText = "...";
 
     try {
-        // نرسل الرسالة مع الـ Prompt الحالي للسيرفر (نحتاج إنشاء هذا المسار في FastAPI)
         const response = await fetch(`/admin/test-ai/${storeId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -305,31 +503,48 @@ async function sendTestMessage() {
         });
 
         const data = await response.json();
-
-        // إضافة رد البوت للواجهة
         chatBox.insertAdjacentHTML('beforeend', `
             <div class="bg-blue-50 text-blue-700 p-3 rounded-2xl rounded-tr-none ml-8 text-xs">
                 ${data.reply || "عذراً، حدث خطأ في الرد."}
             </div>
         `);
-
-        // سكرول لأسفل
         chatBox.scrollTop = chatBox.scrollHeight;
-
     } catch (err) {
-        Toastify({ text: "❌ فشل الاتصال بمحرك الذكاء", backgroundColor: "#ef4444" }).showToast();
+        showToast("❌ فشل الاتصال بمحرك الذكاء", false);
     } finally {
         btn.disabled = false;
         document.getElementById('testBtnText').innerText = "إرسال";
     }
 }
 
-// تفعيل الإرسال عند الضغط على Enter
 document.getElementById('testInput')?.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendTestMessage();
 });
 
-// 2. الدالة الرئيسية لتحديث البيانات
+async function saveSettings() {
+    const btn = document.getElementById('saveBtn');
+    const payload = {
+        admin_phone: document.getElementById('adminPhone').value,
+        system_prompt: document.getElementById('systemPrompt').value
+    };
+    btn.innerText = "جاري الحفظ...";
+    btn.disabled = true;
+    try {
+        await fetch(`/admin/update-config/${storeId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        showToast("✅ تم حفظ الإعدادات");
+    } catch (err) { 
+        showToast("❌ فشل الحفظ", false);
+    } finally { 
+        btn.innerText = "حفظ الإعدادات"; 
+        btn.disabled = false; 
+    }
+}
+
+/* --- 4. جلب بيانات اللوحة الأساسية --- */
 async function loadDashboard() {
     if (!storeId || storeId === "None" || storeId === "") return;
 
@@ -338,7 +553,6 @@ async function loadDashboard() {
         if (!response.ok) throw new Error("Network response was not ok");
         const data = await response.json();
 
-        // تحديث الأرقام
         const updateStat = (id, value) => {
             const el = document.getElementById(id);
             if (el && el.innerText !== String(value)) {
@@ -352,7 +566,6 @@ async function loadDashboard() {
         updateStat('abandonedCount', data.salla_stats?.abandoned_carts_count || 0);
         updateStat('recoveredRevenue', `${Number(data.summary?.total_revenue_saved || 0).toLocaleString()} ر.س`);
 
-        // معالجة الأحداث العاجلة
         if (data.recent_activity && data.recent_activity.length > 0) {
             const eventsContainer = document.getElementById('liveEvents');
             data.recent_activity.slice(0, 3).reverse().forEach(event => {
@@ -376,8 +589,7 @@ async function loadDashboard() {
             });
         }
 
-        // تحديث جدول المحادثات
-        document.getElementById('recentChats').innerHTML = data.recent_activity.map(chat => `
+        document.getElementById('recentChats').innerHTML = (data.recent_activity || []).map(chat => `
             <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
                 <td class="p-4 font-bold text-xs" dir="ltr" style="text-align: right;">${chat.customers?.phone_number || 'عميل'}</td>
                 <td class="p-4 text-xs text-gray-600 truncate max-w-[150px]">${chat.content}</td>
@@ -388,124 +600,14 @@ async function loadDashboard() {
                 </td>
             </tr>`).join('');
 
-        // تحديث المخطط
         renderRecoveryChart(data.charts_data);
 
     } catch (error) { console.error("Dashboard Sync Error:", error); }
 }
 
-// 3. دوال الربط والإعدادات
-async function refreshQR() {
-    const qrImage = document.getElementById('qr-image');
-    const qrBox = document.getElementById('qr-box');
-    
-    // بدء تأثير التحميل والبلاغ البصري
-    qrBox.classList.add("animate-pulse");
-    qrImage.style.filter = "blur(8px)";
-
-    // دالة مساعدة لعمل مهلة زمنية (Wait)
-    const delay = ms => new Promise(res => setTimeout(res, ms));
-
-    let attempts = 0;
-    const maxAttempts = 3; // عدد محاولات إعادة الطلب في حال الفشل
-
-    async function fetchWithRetry() {
-        try {
-            // إضافة مهلة بسيطة (مثلاً 2 ثانية) قبل أول طلب لضمان استقرار السيرفر
-            if (attempts === 0) await delay(2000); 
-
-            const response = await fetch(`/admin/get-qr/${storeId}`);
-            
-            if (!response.ok) throw new Error("Server not ready");
-
-            const data = await response.json();
-
-            if (data.qr_code) {
-                qrImage.src = data.qr_code;
-                return true; // نجاح
-            } 
-            
-            if (data.status === "connected") {
-                qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
-                return true; // نجاح
-            }
-
-            // إذا لم يعد الباركود بعد، قد يكون السيرفر لا يزال ينشئ الجلسة
-            if (attempts < maxAttempts) {
-                attempts++;
-                await delay(200000); // انتظر 3 ثوانٍ قبل المحاولة التالية
-                return await fetchWithRetry();
-            }
-
-        } catch (err) {
-            if (attempts < maxAttempts) {
-                attempts++;
-                await delay(3000);
-                return await fetchWithRetry();
-            }
-            Toastify({ text: "❌ فشل الاتصال بالسيرفر، جرب مرة أخرى", backgroundColor: "#ef4444" }).showToast();
-        }
-        return false;
-    }
-
-    await fetchWithRetry();
-
-    // إنهاء تأثير التحميل
-    qrBox.classList.remove("animate-pulse");
-    qrImage.style.filter = "none";
-}
-
-async function saveSettings() {
-    const btn = document.getElementById('saveBtn');
-    const payload = {
-        admin_phone: document.getElementById('adminPhone').value,
-        system_prompt: document.getElementById('systemPrompt').value
-    };
-    btn.innerText = "جاري الحفظ...";
-    btn.disabled = true;
-    try {
-        await fetch(`/admin/update-config/${storeId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        Toastify({ text: "✅ تم حفظ الإعدادات", backgroundColor: "#10b981" }).showToast();
-    } catch (err) { Toastify({ text: "❌ فشل الحفظ", backgroundColor: "#ef4444" }).showToast();
-    } finally { btn.innerText = "حفظ الإعدادات"; btn.disabled = false; }
-}
-
-// التشغيل الأولي والتحديث الدوري
 loadDashboard();
 setInterval(loadDashboard, 60000);
 
-    </script>
-    <div id="aiPlayground" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col h-[600px] fade-in">
-        <div class="p-6 border-b flex justify-between items-center bg-gray-50">
-            <div>
-                <h3 class="text-xl font-bold text-gray-900">مختبر الذكاء 🧪</h3>
-                <p class="text-[10px] text-gray-500">جرب التعليمات الجديدة قبل الحفظ</p>
-            </div>
-            <button onclick="togglePlayground()" class="text-gray-400 hover:text-red-500 transition-colors text-2xl">&times;</button>
-        </div>
-
-        <div id="playgroundChat" class="flex-grow p-6 overflow-y-auto space-y-4 bg-gray-50/30 custom-table-container">
-            <div class="bg-blue-50 text-blue-700 p-3 rounded-2xl rounded-tr-none ml-8 text-xs">
-                مرحباً! أنا البوت الخاص بك. سأقوم بالرد عليك الآن بناءً على الـ Prompt المكتوب في الإعدادات. جرب سؤالي عن أي شيء!
-            </div>
-        </div>
-
-        <div class="p-4 border-t bg-white">
-            <div class="flex gap-2">
-                <input type="text" id="testInput" placeholder="اكتب رسالة تجريبية..." 
-                       class="flex-grow p-3 bg-gray-100 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                <button onclick="sendTestMessage()" id="sendTestBtn" class="bg-blue-600 text-white px-5 rounded-xl hover:bg-blue-700 transition shadow-md">
-                    <span id="testBtnText">إرسال</span>
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
+</script>
 </body>
 </html>
