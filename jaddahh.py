@@ -401,43 +401,7 @@ async def on_new_message_logic(payload):
     except Exception as e:
         logger.error(f"❌ خطأ عام في دالة on_new_message_logic: {e}")
 
-async def setup_inbound_observer(page, store_id: str):
-    # تعريف الدالة في بايثون كما هي
-    async def on_message_received(payload):
-        phone = payload.get("phone")
-        text = payload.get("text")
-        # فلتر بسيط لضمان عدم معالجة نصوص فارغة
-        if text and len(text.strip()) > 0:
-            logger.info(f"📩 [المتجر: {store_id}] رسالة من {phone}: {text}")
-            asyncio.create_task(process_customer_request(store_id, phone, text))
-    
-    await page.expose_function("notifyNewMessage", on_message_received)
 
-    # حقن كود JS "نحيف" جداً
-    await page.evaluate("""
-        const observer = new MutationObserver((mutations) => {
-            // البحث عن أي عنصر يحتوي على علامة "غير مقروء" (الدائرة الخضراء)
-            const unread = document.querySelector('span[aria-label*="unread"], span[aria-label*="غير مقروءة"]');
-            if (unread) {
-                const chatRow = unread.closest('div[role="row"]');
-                if (chatRow) {
-                    const titleEl = chatRow.querySelector('span[title]');
-                    const contact = titleEl ? titleEl.getAttribute('title') : "Unknown";
-                    // محدد نص الرسالة الأخير (أكثر استقراراً)
-                    const msgEl = chatRow.querySelector('span[dir="ltr"]'); 
-                    const lastMsg = msgEl ? msgEl.innerText : "";
-
-                    // إرسال البيانات
-                    window.notifyNewMessage({ phone: contact, text: lastMsg });
-                }
-            }
-        });
-        
-        const sideBar = document.querySelector('#pane-side');
-        if (sideBar) {
-            observer.observe(sideBar, { childList: true, subtree: true });
-        }
-    """)
 async def block_useless_resources(route):
     # إزالة "image" من الحظر لكي يظهر الـ QR وتظهر صور المنتجات لاحقاً
     useless_types = ["media", "font", "manifest"] 
@@ -1075,37 +1039,43 @@ async def startup_event():
 
 @app.post("/webhook/whatsapp")
 async def handle_whatsapp(request: Request, background_tasks: BackgroundTasks):
-    """
-    نسخة احترافية من الـ Webhook تدعم المعالجة المتوازية والحماية من الأخطاء
-    """
     try:
         data = await request.json()
         
-        # 1. فلترة الرسائل (التأكد أنها رسالة نصية وليست "تأكيد استلام" أو "وسائط")
-        changes = data.get('entry', [{}])[0].get('changes', [{}])[0].get('value', {})
-        if 'messages' not in changes:
-            return {"status": "ignored", "reason": "not_a_message"}
+        # استخراج القيمة الأساسية (Value) من بيانات Meta
+        value = data.get('entry', [{}])[0].get('changes', [{}])[0].get('value', {})
+        
+        if 'messages' not in value:
+            return {"status": "ignored"}
 
-        msg_obj = changes['messages'][0]
-        phone = msg_obj.get('from')
+        # 1. تحديد المتجر بناءً على معرف رقم الهاتف (Phone Number ID)
+        # هذا المعرف ثابت لكل رقم واتساب مربوط بـ Meta، وهو الأفضل للبحث في قاعدة البيانات
+        phone_number_id = value.get('metadata', {}).get('phone_number_id')
+        
+        # 2. جلب الـ store_id من قاعدة البيانات (مثلاً Supabase أو Redis)
+        # سنقوم هنا باستدعاء دالة تبحث عن المتجر المرتبط بهذا الـ phone_number_id
+        store_id = await get_store_id_by_phone_id(phone_number_id)
+        
+        if not store_id:
+            logger.warning(f"Unknown store for Phone ID: {phone_number_id}")
+            return {"status": "error", "reason": "unregistered_number"}
+
+        # 3. استخراج بيانات الرسالة
+        msg_obj = value['messages'][0]
+        customer_phone = msg_obj.get('from')
         text = msg_obj.get('text', {}).get('body', '').strip()
         
         if not text:
-            return {"status": "ignored", "reason": "empty_text"}
+            return {"status": "ignored"}
 
-        # 2. جلب معرف المتجر (في الإنتاج يفضل استخراجه من الـ Meta Business ID)
-        store_id = "STORE_001" 
-
-        # 3. تشغيل المعالجة الثقيلة في الخلفية (Background Task)
-        # هذا يضمن الرد على سيرفر واتساب فوراً بـ 200 OK لتجنب تكرار إرسال الرسالة إليك
-        background_tasks.add_task(process_customer_request, store_id, phone, text)
+        # 4. إرسال المهمة للخلفية مع معرف المتجر الصحيح
+        background_tasks.add_task(process_customer_request, store_id, customer_phone, text)
 
         return {"status": "request_queued"}
 
     except Exception as e:
         logger.error(f"Critical Webhook Error: {str(e)}")
-        # نرد بـ 200 دائماً لسيرفر واتساب حتى لا يعيد المحاولة ويسبب Loop
-        return {"status": "error", "message": "logged"}
+        return {"status": "error"}
 
 # --- 1. دالة البحث عن المنتجات في سلة (المحرك الجديد) ---
 async def search_salla_products(query: str, store_id: str) -> str:
