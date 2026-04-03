@@ -104,7 +104,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # --- استبدل قسم المتصفح القديم بهذا الكود ---
 
 # --- قسم Baileys الجديد ---
-WHATSAPP_URL = os.getenv("WHATSAPP_URL", "http://localhost:8080")
+WHATSAPP_URL = os.getenv("WHATSAPP_URL")
 WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY") # تأكد من إضافة هذا المتغير في ريندر
 
 class BaileysHandler:
@@ -1725,6 +1725,20 @@ async def salla_callback(code: str, state: str = None):
         except Exception as e:
             logger.error(f"❌ خطأ غير متوقع: {e}")
             return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500)
+@app.post("/admin/test-ai/{store_id}")
+async def test_ai(store_id: str, data: dict):
+    user_msg = data.get("message")
+    system_prompt = data.get("prompt")
+    
+    # هنا تقوم باستدعاء Gemini أو OpenAI مباشرة باستخدام الـ Prompt الممرر
+    # ليعطي التاجر نتيجة فورية بناءً على تعديله
+    try:
+        # مثال لاستدعاء دالة الرد (تحتاج لربطها بمحرك الـ AI لديك)
+        reply = await get_ai_response(user_msg, system_prompt) 
+        return {"reply": reply}
+    except Exception as e:
+        return {"reply": f"خطأ في النظام: {str(e)}"}
+    
     
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
