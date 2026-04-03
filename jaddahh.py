@@ -58,6 +58,12 @@ def get_db_connection():
     conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode='require')
     return conn
 
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,  # يفحص الاتصال قبل الاستخدام لتجنب OperationalError
+    pool_recycle=3600,    # إعادة تدوير الروابط كل ساعة
+    connect_args={"sslmode": "require"} # ضروري للاتصال بـ Supabase/Render
+)
 
 # قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
 contexts: Dict[str, any] = {} 
@@ -1333,26 +1339,6 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
 
     return {"status": "ok"}
 
-@app.get("/admin/link-phone/{store_id}")
-async def link_phone_by_number(store_id: str, phone: str):
-    """توليد كود الربط عبر API التطور مباشرة بدون متصفح"""
-    headers = {"apikey": WHATSAPP_API_KEY}
-    url = f"{WHATSAPP_URL}/instance/connect/{store_id}?number={phone}"
-    
-    async with httpx.AsyncClient(verify=False) as client:
-        try:
-            resp = await client.get(url, headers=headers)
-            data = resp.json()
-            if "code" in data:
-                return {
-                    "status": "success",
-                    "pairing_code": data["code"],
-                    "steps": ["افتح واتساب", "الأجهزة المرتبطة", "الربط برقم الهاتف", f"أدخل الكود: {data['code']}"]
-                }
-            return {"status": "error", "message": "تأكد من إنشاء النسخة (Instance) أولاً"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
 
 # تغيير من dashboard-stats إلى dashboard
 @app.get("/api/dashboard/{store_id}") 
@@ -1558,31 +1544,85 @@ async def update_config(store_id: str, settings: dict):
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    
+    async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
         try:
-            # محاولة جلب حالة الاتصال أولاً
+            # التحقق من حالة الغرفة أولاً
+            status_url = f"{WHATSAPP_URL}/instance/connectionState/{store_id}"
+            status_resp = await client.get(status_url, headers=headers)
+            
+            # إذا كانت غير موجودة (404) أو واجه السيرفر تعليقاً (500)، نحاول إنشائها
+            if status_resp.status_code in [404, 500]:
+                logger.info(f"🏗️ جاري إنشاء الـ Instance للمتجر {store_id}...")
+                create_payload = {
+                    "instanceName": store_id,
+                    "qrcode": True,
+                    "integration": "WHATSAPP-BAILEYS" # لضمان الاستقرار في Evolution
+                }
+                await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
+                await asyncio.sleep(2.0) # انتظار السيرفر لحفظ البيانات في قاعدة PostgreSQL
+            
+            # جلب بيانات الربط
+            connect_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{store_id}", headers=headers)
+            
+            if connect_resp.status_code == 200:
+                data = connect_resp.json()
+                
+                # التحقق من وجود الباركود وتصليح صيغة Base64 للمتصفح
+                if data.get("base64"):
+                    base64_data = data["base64"]
+                    if not base64_data.startswith("data:image"):
+                        base64_data = f"data:image/png;base64,{base64_data}"
+                    return {"status": "ready", "qr_code": base64_data}
+                
+                # التحقق إذا كان المتجر متصلاً بالفعل
+                if data.get("instance", {}).get("state") == "open" or data.get("status") == "CONNECTED":
+                    return {"status": "connected", "message": "متصل بنجاح ✅"}
+
+            return {"status": "processing", "message": "جاري تجهيز الجلسة، جرب مجدداً"}
+
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الباركود: {str(e)}")
+            return {"status": "error", "message": "فشل الاتصال بسيرفر Evolution API"}
+
+# 2. دالة طلب كود الربط (Pairing Code) مع الإنشاء التلقائي
+@app.get("/admin/link-phone/{store_id}")
+async def link_phone_auto_logic(store_id: str, phone: str):
+    headers = {"apikey": os.getenv("WHATSAPP_API_KEY"), "Content-Type": "application/json"}
+    clean_phone = "".join(filter(str.isdigit, phone))
+    
+    async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
+        try:
             status_resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{store_id}", headers=headers)
             
-            if status_resp.status_code == 404:
-                # إذا كانت الغرفة غير موجودة، ننشئها
-                await client.post(f"{WHATSAPP_URL}/instance/create", 
-                                 json={"instanceName": store_id, "qrcode": True}, headers=headers)
-                return {"status": "processing", "message": "جاري إنشاء الجلسة.. أعد المحاولة"}
+            # الإنشاء التلقائي إذا لم تكن موجودة
+            if status_resp.status_code in [404, 500]:
+                logger.info(f"🏗️ إنشاء الـ Instance تلقائياً للمتجر {store_id} لتوليد الكود...")
+                create_payload = {
+                    "instanceName": store_id,
+                    "qrcode": False, # ليس ضرورياً هنا لأننا نستخدم رقم الجوال
+                    "number": clean_phone
+                }
+                await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
+                await asyncio.sleep(2.0)
 
-            # جلب كود QR
-            qr_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{store_id}", headers=headers)
-            data = qr_resp.json()
+            # طلب كود الربط
+            connect_url = f"{WHATSAPP_URL}/instance/connect/{store_id}?number={clean_phone}"
+            qr_resp = await client.get(connect_url, headers=headers)
             
-            if data.get("base64"):
-                return {"status": "ready", "qr_code": data["base64"]}
-            
-            if data.get("status") == "CONNECTED":
-                return {"status": "connected", "message": "متصل بنجاح ✅"}
+            if qr_resp.status_code == 200:
+                data = qr_resp.json()
+                if "code" in data:
+                    return {"status": "success", "pairing_code": data["code"]}
                 
-            return {"status": "error", "message": "تأكد من تشغيل Evolution API"}
-        except Exception as e:
-            return {"status": "error", "message": "فشل الاتصال بالسيرفر الداخلي"}
+                error_msg = data.get("message", "الكود غير متاح حالياً")
+                return {"status": "error", "message": error_msg}
+            
+            return {"status": "error", "message": "فشل الاتصال الواتساب الداخلي"}
 
+        except Exception as e:
+            logger.error(f"❌ خطأ في توليد الكود: {str(e)}")
+            return {"status": "error", "message": "حدث خطأ في النظام"}
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
     # إعداد البيانات للـ Evolution API
