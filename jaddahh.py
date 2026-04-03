@@ -226,18 +226,46 @@ async def whatsapp_worker():
 # لا تنسى تشغيل العامل عند بدء تشغيل FastAPI
 @app.on_event("startup")
 async def startup_event():
-    # 1. تشغيل العامل في الخلفية
+    # 1. تشغيل العامل (Worker) المسؤول عن الإرسال
     asyncio.create_task(whatsapp_worker())
     
-    # 2. إرسال رسالة اختبار بعد 10 ثوانٍ من التشغيل لضمان استقرار المتصفح
-    async def send_test():
-        await asyncio.sleep(10)
-        # ملاحظة: تأكد من إزالة الـ + من الرقم إذا كانت دالة send_via_web_bridge تنظف الرقم تلقائياً
-        test_phone = "966566187430" 
-        logger.info(f"🧪 جاري ضخ رسالة اختبار للرقم {test_phone}...")
-        await message_queue.put(("1867788552", test_phone, "🚀 رسالة تجربة: محرك البوت يعمل وجاهز للرد!"))
-    
-    asyncio.create_task(send_test())
+    # 2. وظيفة ذكية تنتظر الربط قبل إرسال الاختبار
+    async def wait_for_connection_and_test():
+        test_store_id = "1867788552"
+        test_phone = "966566187430"
+        
+        headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
+        check_url = f"{WHATSAPP_URL}/instance/connectionState/{test_store_id}"
+
+        logger.info(f"⏳ بانتظار ربط المتجر {test_store_id} لإرسال رسالة الاختبار...")
+
+        # محاولة الفحص كل 5 ثوانٍ (حلقة تكرار حتى يتم الربط)
+        async with httpx.AsyncClient(verify=False) as client:
+            while True:
+                try:
+                    response = await client.get(check_url, headers=headers)
+                    data = response.json()
+                    
+                    # التحقق من حالة الاتصال في Evolution API
+                    if response.status_code == 200 and data.get("instance", {}).get("state") == "open":
+                        logger.info(f"✅ تم اكتشاف الربط! جاري إرسال رسالة الترحيب للمتجر {test_store_id}...")
+                        
+                        # إرسال الرسالة إلى الطابور (Queue) ليقوم الـ Worker بمعالجتها
+                        await message_queue.put((
+                            test_store_id, 
+                            test_phone, 
+                            "🚀 تم الربط بنجاح! نظام الرادار الآن نشط وجاهز لاستقبال طلبات عملائك."
+                        ))
+                        break # الخروج من الحلقة بعد نجاح الإرسال
+                        
+                except Exception as e:
+                    logger.error(f"⚠️ خطأ أثناء فحص حالة الربط: {e}")
+                
+                # انتظر 5 ثوانٍ قبل محاولة الفحص التالية
+                await asyncio.sleep(5)
+
+    # تشغيل مهمة المراقبة في الخلفية
+    asyncio.create_task(wait_for_connection_and_test())
 
 # تشغيل العامل عند بدء التطبيق
 
@@ -654,104 +682,123 @@ async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
 
 async def groq_analyze_intent(message: str) -> dict:
     """
-    تحليل نية العميل لاستخراج رقم الطلب أو اسم المنتج بدقة عالية
+    تحليل نية العميل لاستخراج رقم الطلب أو اسم المنتج بدقة عالية باستخدام Llama 3.3
     """
     url = "https://api.groq.com/openai/v1/chat/completions"
     
-    # جلب المفتاح بأمان من متغيرات البيئة
     api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        logger.error("❌ GROQ_API_KEY is missing")
+        return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     
-    # برومبت احترافي يجمع كل المتطلبات
+    # تحسين البرومبت ليكون أكثر صرامة مع الـ JSON
     prompt = """
-    أنت محلل نصوص خبير لمتجر إلكتروني. حلل رسالة العميل واستخرج البيانات التالية بصيغة JSON فقط:
-    1. is_order: (bool) true إذا كان العميل يسأل عن (تتبع، حالة شحن، تعديل طلب، أو يسأل عن طلب سابق).
-    2. order_id: (string) استخرج رقم الطلب المكون من أرقام فقط. إذا لم يوجد ضع null.
-    3. is_product: (bool) true إذا كان يسأل عن (توفر منتج، سعر منتج، أو تفاصيل منتج معين).
-    4. product_name: (string) اسم المنتج المستخلص بوضوح. إذا لم يوجد ضع null.
+    أنت محلل نصوص خبير لمتجر إلكتروني سعودي. حلل رسالة العميل واستخرج البيانات التالية بصيغة JSON فقط:
+    1. is_order: (bool) true إذا كان العميل يسأل عن (تتبع، حالة شحن، تعديل طلب، أو طلب سابق).
+    2. order_id: (string) استخرج رقم الطلب (أرقام فقط). إذا لم يوجد ضع null.
+    3. is_product: (bool) true إذا كان يسأل عن (توفر، سعر، أو تفاصيل منتج).
+    4. product_name: (string) اسم المنتج المستخلص. إذا لم يوجد ضع null.
 
-    أجب بصيغة JSON فقط دون أي شرح إضافي.
+    قاعدة هامة: أجب بصيغة JSON فقط.
     """
     
     payload = {
-        "model": "llama3-70b-8192",  # الموديل الأكبر هو الأفضل لفهم تفاصيل المنتجات
+        # التحديث هنا: استخدام الموديل الأحدث والأذكى للتحليل المعقد
+        "model": "llama-3.3-70b-versatile", 
         "messages": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": message}
         ],
-        "temperature": 0,
-        "response_format": {"type": "json_object"} # ميزة Groq لضمان استلام JSON سليم 100%
+        "temperature": 0, # صفر لضمان استجابة منطقية وثابتة (Deterministic)
+        "response_format": {"type": "json_object"} 
     }
     
     async with httpx.AsyncClient() as client:
         try:
-            r = await client.post(url, json=payload, headers=headers, timeout=15.0)
+            # تقليل التايم آوت قليلاً لسرعة استجابة البوت
+            r = await client.post(url, json=payload, headers=headers, timeout=12.0)
             
-            if r.status_code != 200:
-                logger.error(f"Groq API Error: {r.status_code} - {r.text}")
-                return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
+            if r.status_code == 200:
+                content = r.json()["choices"][0]["message"]["content"]
+                return json.loads(content)
+            
+            # في حال كان الموديل 70B مشغولاً (Rate Limit)، يمكن التبديل آلياً لـ 8B كخطة بديلة
+            elif r.status_code == 429:
+                logger.warning("⚠️ 70B model busy, switching to 8B for intent analysis")
+                payload["model"] = "llama-3.1-8b-instant"
+                r = await client.post(url, json=payload, headers=headers, timeout=10.0)
+                if r.status_code == 200:
+                    return json.loads(r.json()["choices"][0]["message"]["content"])
+
+            logger.error(f"❌ Groq API Error: {r.status_code} - {r.text}")
+            return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
                 
-            response_data = r.json()
-            content = response_data["choices"][0]["message"]["content"]
-            
-            # تحويل النص المستلم إلى قاموس بايثون
-            return json.loads(content)
-            
         except Exception as e:
-            logger.error(f"Error in groq_analyze_intent: {str(e)}")
-            # إرجاع قيم افتراضية لضمان عدم توقف البوت عند حدوث خطأ
+            logger.error(f"❌ Error in groq_analyze_intent: {str(e)}")
             return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
 
 async def groq_generate_reply(history: List[Dict], context: str, system_prompt: str) -> str:
     """توليد رد بشري ذكي مع محاكاة التأخير البشري وتصحيح الموديل"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     
-    # التأكد من جلب المفتاح بشكل صحيح
+    # جلب مفتاح API من البيئة
     api_key = os.getenv("GROQ_API_KEY") 
+    if not api_key:
+        logger.error("❌ GROQ_API_KEY is missing from environment variables")
+        return "عذراً، نظام الذكاء الاصطناعي غير مهيأ حالياً."
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     
-    # تحسين السياق
+    # تحسين السياق وضمان عدم إرسال None
     extra_context = context if context else "لا توجد بيانات طلب محددة. أجب بناءً على معلومات المتجر العامة."
     full_system = f"{system_prompt}\n\n[سياق النظام الحالي]:\n{extra_context}"
     
-    # تقليص التاريخ لسرعة الاستجابة
+    # تقليص التاريخ لتقليل عدد الـ Tokens وسرعة الاستجابة
     compact_history = history[-6:]
     messages = [{"role": "system", "content": full_system}] + compact_history
 
-    # 1. محاكاة وقت القراءة (تأخير قبل إرسال الطلب)
-    await asyncio.sleep(random.uniform(1.5, 3.0))
+    # 1. محاكاة وقت القراءة (تأخير واقعي)
+    await asyncio.sleep(random.uniform(1.2, 2.5))
 
     async with httpx.AsyncClient() as client:
         try:
+            # التحديث الأساسي هنا: تغيير الموديل إلى الإصدار المدعوم حالياً
+            payload = {
+                "model": "llama-3.1-8b-instant",  # تحديث الموديل من llama3-8b إلى llama-3.1-8b
+                "messages": messages,
+                "temperature": 0.6,               # تقليل الحرارة قليلاً لردود أكثر دقة
+                "max_tokens": 800                 # زيادة عدد التوكنز للردود العربية الطويلة
+            }
+
             response = await client.post(
                 url, 
-                json={
-                    "model": "llama3-8b-8192",  # تم التصحيح من groq-1 إلى اسم موديل حقيقي
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 500
-                }, 
+                json=payload, 
                 headers=headers,
                 timeout=30.0
             )
             
             if response.status_code == 200:
-                reply = response.json()["choices"][0]["message"]["content"]
+                res_data = response.json()
+                reply = res_data["choices"][0]["message"]["content"]
                 
-                # 2. محاكاة وقت "الكتابة" بناءً على طول الرد
-                typing_time = len(reply) * 0.04 
-                await asyncio.sleep(min(typing_time, 2.5)) # لا يتجاوز التأخير 2.5 ثانية
+                # 2. محاكاة وقت "الكتابة" (0.05 ثانية لكل حرف بحد أقصى 3 ثواني)
+                typing_time = min(len(reply) * 0.05, 3.0)
+                await asyncio.sleep(typing_time)
                 
                 return reply
+            
+            # التعامل مع أخطاء الـ API (مثل انتهاء الرصيد أو الموديل)
             else:
-                # تسجيل الخطأ الحقيقي في الـ Logs لمعرفة السبب (مفتاح خطأ، رصيد منتهي، إلخ)
-                logger.error(f"❌ Groq API Error: {response.status_code} - {response.text}")
+                error_info = response.json()
+                logger.error(f"❌ Groq API Error: {response.status_code} - {error_info}")
                 return "المعذرة منك، يبدو أن هناك ضغط بسيط على النظام. كيف أقدر أساعدك بشيء آخر؟"
                 
         except Exception as e:
@@ -1287,81 +1334,24 @@ async def handle_salla_event(request: Request, background_tasks: BackgroundTasks
     return {"status": "ok"}
 
 @app.get("/admin/link-phone/{store_id}")
-async def link_phone_by_number(store_id: str, phone: str = "967785022014"):
-    """
-    توليد كود الربط لواتساب ويب باستخدام رقم الهاتف مباشرة.
-    الإدخال: معرف المتجر ورقم الهاتف (بالمقدمة الدولية وبدون +).
-    """
-    try:
-        page = await get_handler_for_store(store_id)
-        if not page: 
-            return {"status": "error", "message": "السيرفر مشغول حالياً، حاول بعد دقيقة"}
-
-        logger.info(f"📱 بدء عملية الربط بالرقم {phone} للمتجر {store_id}")
-
-        # 1. الدخول لواتساب ويب مع انتظار التحميل الأساسي
-        await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=200000)
-
-        # 2. البحث عن خيار الربط بالرقم (Link with phone number)
-        # استخدمنا محدد نصي مرن يدعم العربية والإنجليزية
-        link_selector = "span[role='button']:has-text('Link with phone number'), span:has-text('ربط برقم الهاتف')"
-        await page.wait_for_selector(link_selector, timeout=30000)
-        await page.click(link_selector)
-
-        # 3. إدخال رقم الهاتف
-        # ملاحظة: واتساب ويب يطلب الرقم بدون المقدمة إذا كانت الدولة مختارة مسبقاً،
-        # لكن الأضمن هو مسح الحقل وإدخال الرقم كاملاً.
-        input_selector = "input[aria-label='Type your phone number.'], input[placeholder='رقم الهاتف']"
-        await page.wait_for_selector(input_selector)
-        await page.fill(input_selector, phone)
-        
-        # 4. النقر على "التالي" لتوليد الكود
-        next_btn = "button:has-text('Next'), button:has-text('التالي')"
-        await page.click(next_btn)
-
-        # 5. استخراج الكود المكون من 8 رموز
-        code_selector = "div[data-testid='pairing-code-cell']"
-        await page.wait_for_selector(code_selector, timeout=200000)
-        
-        # دالة JS لجلب الحروف وتجميعها في نص واحد
-        pairing_code = await page.evaluate('''() => {
-            const cells = document.querySelectorAll("div[data-testid='pairing-code-cell'] span");
-            return Array.from(cells).map(c => c.innerText).join("");
-        }''')
-
-        if pairing_code:
-            # تشغيل المراقب السحابي لحفظ الجلسة فور إدخال الكود في الهاتف
-            asyncio.create_task(start_monitoring_after_qr(page, store_id))
-            
-            return {
-                "status": "success",
-                "pairing_code": pairing_code,
-                "steps": [
-                    "1. افتح واتساب في هاتفك",
-                    "2. الإعدادات > الأجهزة المرتبطة > ربط جهاز",
-                    "3. اختر 'الربط برقم الهاتف بدلاً من ذلك'",
-                    f"4. أدخل الكود: {pairing_code}"
-                ]
-            }
-
-    except Exception as e:
-        logger.error(f"❌ خطأ في Pairing Code للمتجر {store_id}: {e}")
-        return {"status": "error", "message": "حدث خطأ أثناء الاتصال، يرجى تحديث الصفحة والمحاولة"}
-
-@app.get("/admin/{store_id}", response_class=HTMLResponse)
-async def admin_panel(store_id: str):
-    try:
-        # قراءة محتوى الملف المنفصل
-        with open("index.html", "r", encoding="utf-8") as f:
-            content = f.read()
-        
-        # استبدال المعرف الثابت بالمعرف الديناميكي لكل تاجر
-        # في ملف index.html تأكد أنك تستخدم هذا المعرف في الـ JS
-        content = content.replace('const storeId = "STORE_001";', f'const storeId = "{store_id}";')
-        
-        return HTMLResponse(content=content)
-    except FileNotFoundError:
-        return HTMLResponse(content="<h1>خطأ: ملف index.html غير موجود في السيرفر</h1>", status_code=404)
+async def link_phone_by_number(store_id: str, phone: str):
+    """توليد كود الربط عبر API التطور مباشرة بدون متصفح"""
+    headers = {"apikey": WHATSAPP_API_KEY}
+    url = f"{WHATSAPP_URL}/instance/connect/{store_id}?number={phone}"
+    
+    async with httpx.AsyncClient(verify=False) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            data = resp.json()
+            if "code" in data:
+                return {
+                    "status": "success",
+                    "pairing_code": data["code"],
+                    "steps": ["افتح واتساب", "الأجهزة المرتبطة", "الربط برقم الهاتف", f"أدخل الكود: {data['code']}"]
+                }
+            return {"status": "error", "message": "تأكد من إنشاء النسخة (Instance) أولاً"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 # تغيير من dashboard-stats إلى dashboard
