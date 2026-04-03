@@ -421,38 +421,46 @@ async function requestPairingCode() {
     const codeValueEl = document.getElementById('pairingCodeValue');
 
     if (!phoneInput) {
-        showToast("⚠️ يرجى إدخال رقم الواتساب أولاً", false);
+        showToast("⚠️ يرجى إدخال رقم الواتساب بالصيغة الدولية (بدون +)", false);
         return;
     }
 
-    btn.innerText = "جاري الطلب...";
+    // تنظيف الرقم من المسافات أو علامة + في حال أدخلها المستخدم
+    const cleanPhone = phoneInput.replace(/\D/g, '');
+
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جاري الطلب...';
     btn.disabled = true;
 
     try {
-        // تأكد من وجود هذا الـ Endpoint في الـ Backend (FastAPI) الخاص بك
-        const response = await fetch(`/admin/get-pairing-code/${storeId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone_number: phoneInput })
-        });
+        // نستخدم GET لأن المسار الذي اقترحناه في الـ Backend هو @app.get
+        // ونمرر الرقم كـ Query Parameter
+        const response = await fetch(`/admin/link-phone/${storeId}?phone=${cleanPhone}`);
 
-        if (!response.ok) throw new Error("فشل توليد الكود");
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.message || "فشل توليد الكود");
+        }
         
         const data = await response.json();
 
-        if (data.pairing_code) {
-            // إضافة مسافة لتسهيل القراءة (مثال: ABCD EFGH)
+        if (data.status === "success" && data.pairing_code) {
+            // تنسيق الكود: ABCDEFGH -> ABCD-EFGH لسهولة القراءة
             const code = data.pairing_code;
-            const formattedCode = code.match(/.{1,4}/g)?.join(' ') || code;
+            const formattedCode = code.length === 8 ? 
+                `${code.substring(0, 4)}-${code.substring(4)}` : code;
             
             codeValueEl.innerText = formattedCode;
+            
+            // إظهار الحاوية مع أنيميشن بسيط
             displayContainer.classList.remove('hidden');
+            displayContainer.style.display = 'block'; 
+            
             showToast("✅ تم توليد كود الربط بنجاح");
         } else {
-            throw new Error("الكود غير متواجد في الاستجابة");
+            throw new Error(data.message || "الكود غير متواجد في الاستجابة");
         }
     } catch (err) {
-        showToast("❌ حدث خطأ، تأكد من الرقم والمحاولة مرة أخرى", false);
+        showToast(`❌ ${err.message}`, false);
         console.error("Pairing Code Error:", err);
     } finally {
         btn.innerText = "طلب كود الربط 🔑";
@@ -460,13 +468,12 @@ async function requestPairingCode() {
     }
 }
 
-// نسخ كود الربط للحافظة
+
 function copyPairingCode() {
-    const code = document.getElementById('pairingCodeValue').innerText.replace(/\s+/g, '');
+    // إزالة أي مسافات أو شرطات قبل النسخ لضمان عمل الكود في الواتساب
+    const code = document.getElementById('pairingCodeValue').innerText.replace(/[^a-zA-Z0-9]/g, '');
     navigator.clipboard.writeText(code).then(() => {
         showToast("📋 تم نسخ الكود!");
-    }).catch(err => {
-        console.error('فشل النسخ: ', err);
     });
 }
 
