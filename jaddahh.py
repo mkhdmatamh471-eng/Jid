@@ -104,40 +104,69 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # --- استبدل قسم المتصفح القديم بهذا الكود ---
 
 # --- قسم Baileys الجديد ---
-WHATSAPP_URL = os.getenv("WHATSAPP_URL")
-WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY") 
-
+WHATSAPP_URL = os.getenv("WHATSAPP_URL", "http://localhost:8080")
+WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY") # تأكد من إضافة هذا المتغير في ريندر
 
 class BaileysHandler:
     def __init__(self, store_id: str):
         self.store_id = store_id
+        # نجهز الهيدر مرة واحدة لاستخدامه في كل الطلبات
+        self.headers = {
+            "apikey": WHATSAPP_API_KEY,
+            "Content-Type": "application/json"
+        }
 
     async def send_text(self, phone: str, text: str):
-        async with httpx.AsyncClient() as client:
+        # استخدمنا verify=False لتجاوز خطأ SSL Certificate الذي ظهر في الـ Logs
+        async with httpx.AsyncClient(verify=False) as client:
             try:
                 clean_phone = "".join(filter(str.isdigit, phone))
-                # إرسال الطلب لخدمة Baileys الخارجية
+                
+                # المسار الصحيح لـ Evolution API لإرسال رسالة نصية
+                url = f"{WHATSAPP_URL}/message/sendText/{self.store_id}"
+                
+                payload = {
+                    "number": clean_phone,
+                    "options": {
+                        "delay": 1200, 
+                        "presence": "composing",
+                        "linkPreview": False
+                    },
+                    "textMessage": {"text": text}
+                }
+
                 response = await client.post(
-                    f"{WHATSAPP_URL}/message/sendText/{self.store_id}",
-                    json={"number": clean_phone, "text": text},
-                    timeout=15.0
+                    url,
+                    json=payload,
+                    headers=self.headers,
+                    timeout=20.0
                 )
-                return response.status_code in [200, 201]
+                
+                if response.status_code in [200, 201]:
+                    return True
+                else:
+                    logger.error(f"❌ Evolution Error: {response.text}")
+                    return False
             except Exception as e:
                 logger.error(f"❌ Baileys Send Error: {e}")
                 return False
 
     async def get_status(self):
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=False) as client:
             try:
-                resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{self.store_id}")
-                return resp.json().get("instance", {}).get("state") == "open"
-            except: return False
+                # التحقق من حالة الاتصال (هل الرقم مربوط أم لا)
+                url = f"{WHATSAPP_URL}/instance/connectionState/{self.store_id}"
+                resp = await client.get(url, headers=self.headers)
+                data = resp.json()
+                # Evolution تعيد الحالة في حقل instance.state
+                return data.get("instance", {}).get("state") == "open"
+            except Exception as e:
+                logger.error(f"❌ Status Check Error: {e}")
+                return False
 
-# دالة الجسر: استبدل الدالة القديمة بهذه لضمان عمل الـ Worker والسلال المتروكة
 async def get_handler_for_store(store_id: str):
     return BaileysHandler(store_id)
-
+    
 def execute_db_query(query: str, params: dict = None, fetch: str = None):
     """
     نسخة احترافية تدعم التراجع التلقائي في حال الخطأ (Rollback)
