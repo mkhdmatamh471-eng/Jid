@@ -652,55 +652,62 @@ async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
 
 # --- خدمات الذكاء الاصطناعي (GROQ xAI) ---
 
-async def groq_analyze_intent(message: str) -> Dict:
-    """استخراج نية العميل ورقم الطلب باستخدام groq بدقة وموثوقية عالية"""
-    url = "https://api.x.ai/v1/chat/completions"
+async def groq_analyze_intent(message: str) -> dict:
+    """
+    تحليل نية العميل لاستخراج رقم الطلب أو اسم المنتج بدقة عالية
+    """
+    url = "https://api.groq.com/openai/v1/chat/completions"
     
-    # البرومبت المطور لضمان الدقة واستخراج الأرقام بشكل صحيح
+    # جلب المفتاح بأمان من متغيرات البيئة
+    api_key = os.getenv("GROQ_API_KEY")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # برومبت احترافي يجمع كل المتطلبات
     prompt = """
-    حلل رسالة العميل التالية واستخرج النية (Intent) ورقم الطلب إن وجد.
-    يجب أن يكون الرد بصيغة JSON فقط، بدون أي نص إضافي قبل أو بعد القوسين، وبدون علامات Markdown.
+    أنت محلل نصوص خبير لمتجر إلكتروني. حلل رسالة العميل واستخرج البيانات التالية بصيغة JSON فقط:
+    1. is_order: (bool) true إذا كان العميل يسأل عن (تتبع، حالة شحن، تعديل طلب، أو يسأل عن طلب سابق).
+    2. order_id: (string) استخرج رقم الطلب المكون من أرقام فقط. إذا لم يوجد ضع null.
+    3. is_product: (bool) true إذا كان يسأل عن (توفر منتج، سعر منتج، أو تفاصيل منتج معين).
+    4. product_name: (string) اسم المنتج المستخلص بوضوح. إذا لم يوجد ضع null.
 
-    القواعد:
-    1. is_order: تكون true إذا كان العميل يستفسر عن حالة طلب، تتبع شحنة، أو تعديل طلب.
-    2. order_id: استخرج رقم الطلب فقط (أرقام فقط). إذا لم يوجد رقم، ضع null.
-
-    صيغة الرد المطلوبة:
-    {"is_order": bool, "order_id": string or null}
+    أجب بصيغة JSON فقط دون أي شرح إضافي.
     """
     
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     payload = {
-        "model": "groq-1",
+        "model": "llama3-70b-8192",  # الموديل الأكبر هو الأفضل لفهم تفاصيل المنتجات
         "messages": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": message}
         ],
-        "temperature": 0  # نبقيها 0 لضمان استجابة رياضية دقيقة وعدم التأليف
+        "temperature": 0,
+        "response_format": {"type": "json_object"} # ميزة Groq لضمان استلام JSON سليم 100%
     }
     
     async with httpx.AsyncClient() as client:
         try:
-            r = await client.post(url, json=payload, headers=headers)
-            content = r.json()["choices"][0]["message"]["content"]
+            r = await client.post(url, json=payload, headers=headers, timeout=15.0)
             
-            # 💡 تنظيف النص: إزالة علامات الاقتباس الخلفية التي تضيفها نماذج الذكاء الاصطناعي أحياناً
-            clean_content = content.replace("```json", "").replace("```", "").strip()
+            if r.status_code != 200:
+                logger.error(f"Groq API Error: {r.status_code} - {r.text}")
+                return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
+                
+            response_data = r.json()
+            content = response_data["choices"][0]["message"]["content"]
             
-            return json.loads(clean_content)
+            # تحويل النص المستلم إلى قاموس بايثون
+            return json.loads(content)
             
         except Exception as e:
-            # تسجيل الخطأ لكي تراجعه لاحقاً دون أن يتوقف البوت
-            logger.error(f"Groq Intent Parsing Error: {str(e)} - Content: {content if 'content' in locals() else 'None'}")
-            
-            # إرجاع حالة افتراضية آمنة حتى يكمل البوت المحادثة بشكل طبيعي
-            return {"is_order": False, "order_id": None}
-
-
+            logger.error(f"Error in groq_analyze_intent: {str(e)}")
+            # إرجاع قيم افتراضية لضمان عدم توقف البوت عند حدوث خطأ
+            return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
 
 async def groq_generate_reply(history: List[Dict], context: str, system_prompt: str) -> str:
     """توليد رد بشري وذكي بناءً على السياق وتاريخ المحادثة"""
-    url = "https://api.x.ai/v1/chat/completions"
+    url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -1088,34 +1095,6 @@ async def search_salla_products(query: str, store_id: str) -> str:
         return "حدث خطأ أثناء محاولة البحث عن تفاصيل المنتج."
 
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
-async def groq_analyze_intent(message: str) -> dict:
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}", "Content-Type": "application/json"}
-    
-    # برومبت دقيق جداً لاستخراج اسم المنتج
-    prompt = """
-    تحليل رسالة العميل وإرجاع JSON فقط:
-    {
-      "is_order": bool,      // إذا كان يسأل عن حالة طلب أو تتبع
-      "order_id": string,    // رقم الطلب إن وجد
-      "is_product": bool,    // إذا كان يستفسر عن منتج معين، سعره، أو توفره
-      "product_name": string // اسم المنتج المستخلص من الجملة (مثلاً: "قهوة باجا")
-    }
-    """
-    
-    payload = {
-        "model": "llama3-70b-8192", # نستخدم الموديل الأكبر للدقة في التحليل
-        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": message}],
-        "response_format": {"type": "json_object"}
-    }
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.post(url, json=payload, headers=headers)
-            return json.loads(r.json()["choices"][0]["message"]["content"])
-        except:
-            return {"is_order": False, "order_id": None, "is_product": False, "product_name": None}
-
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
 async def process_customer_request(store_id: str, phone: str, text: str):
     """المعالج الرئيسي المحدث: يدعم الاستعلام عن الطلبات والبحث عن المنتجات"""
