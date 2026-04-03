@@ -1419,7 +1419,7 @@ async def link_phone_by_number(store_id: str, phone: str = "967785022014"):
         logger.info(f"📱 بدء عملية الربط بالرقم {phone} للمتجر {store_id}")
 
         # 1. الدخول لواتساب ويب مع انتظار التحميل الأساسي
-        await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=60000)
+        await page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=200000)
 
         # 2. البحث عن خيار الربط بالرقم (Link with phone number)
         # استخدمنا محدد نصي مرن يدعم العربية والإنجليزية
