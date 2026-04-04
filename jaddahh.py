@@ -1489,45 +1489,62 @@ async def update_config(store_id: str, settings: dict):
 
 
 # 1. دالة الباركود
+
+# 1. دالة جلب الباركود
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str, session_name: str = "main"):
-    # ندمج المعرف مع اسم الجلسة ليكون فريداً (مثلاً: 12345_main)
     instance_id = f"{store_id}_{session_name}"
-    print(f"\n🚀 [BACKEND] طلب باركود للجلسة: {instance_id}")
+    print(f"\n{'='*50}\n🚀 [BACKEND - QR] بدء طلب باركود للجلسة: {instance_id}\n{'='*50}")
     
-    headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
+    # تنظيف الرابط والتأكد من عدم وجود شرطة مائلة في النهاية
+    whatsapp_url = os.getenv("WHATSAPP_URL", "").rstrip("/")
+    api_key = os.getenv("WHATSAPP_API_KEY")
+    headers = {"apikey": api_key, "Content-Type": "application/json"}
     
-    async with httpx.AsyncClient(verify=False, timeout=100.0) as client:
+    async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
         try:
-            # الخطوة 1: فحص هل الجلسة موجودة أصلاً؟
-            status_url = f"{WHATSAPP_URL}/instance/connectionState/{instance_id}"
+            # --- الخطوة 1: الفحص ---
+            status_url = f"{whatsapp_url}/instance/connectionState/{instance_id}"
+            print(f"🔍 [1] جاري فحص حالة الجلسة عبر الرابط: {status_url}")
             status_resp = await client.get(status_url, headers=headers)
+            print(f"📥 [1] استجابة الفحص | الكود: {status_resp.status_code} | النص: {status_resp.text}")
             
-            # إذا الجلسة موجودة (Status 200)
             if status_resp.status_code == 200:
                 data = status_resp.json()
                 state = data.get("instance", {}).get("state")
-                
+                print(f"💡 [1] الجلسة موجودة مسبقاً. الحالة الحالية: {state}")
                 if state == "open":
                     return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
-                
-                # إذا كانت موجودة ولكن غير متصلة، نطلب الباركود مباشرة دون حذف
-                print(f"🔄 الجلسة {instance_id} موجودة ولكنها غير متصلة. جاري طلب باركود...")
             
-            # الخطوة 2: إذا كانت الجلسة غير موجودة (404)، ننشئها
+            # --- الخطوة 2: الإنشاء ---
             elif status_resp.status_code == 404:
-                print(f"🏗️ إنشاء جلسة جديدة: {instance_id}")
+                print(f"🏗️ [2] الجلسة غير موجودة. جاري محاولة إنشائها...")
                 create_payload = {
                     "instanceName": instance_id,
-                    "token": os.getenv("WHATSAPP_API_KEY"),
+                    "token": api_key,
                     "qrcode": True,
                     "integration": "WHATSAPP-BAILEYS"
                 }
-                await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-                await asyncio.sleep(60.0) # وقت بسيط للتهيئة
+                create_url = f"{whatsapp_url}/instance/create"
+                print(f"📡 [2] إرسال طلب الإنشاء | البيانات المرسلة: {create_payload}")
+                
+                create_resp = await client.post(create_url, json=create_payload, headers=headers)
+                print(f"📥 [2] استجابة الإنشاء | الكود: {create_resp.status_code} | النص: {create_resp.text}")
+                
+                # إيقاف العملية إذا رفض السيرفر الإنشاء (مثل خطأ 400)
+                if create_resp.status_code not in [200, 201]:
+                    return {"status": "error", "message": f"رفض السيرفر إنشاء الجلسة (الخطأ {create_resp.status_code}): {create_resp.text}"}
+                
+                print("⏳ [2] الإنشاء ناجح. ننتظر 5 ثوانٍ لتهيئة الملفات داخل Evolution API...")
+                await asyncio.sleep(5.0) 
+            else:
+                print(f"⚠️ [1] استجابة غير متوقعة عند الفحص: {status_resp.status_code}")
 
-            # الخطوة 3: طلب الربط (عرض الباركود) للجلسة القائمة أو الجديدة
-            connect_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{instance_id}", headers=headers)
+            # --- الخطوة 3: الربط (جلب الباركود) ---
+            connect_url = f"{whatsapp_url}/instance/connect/{instance_id}"
+            print(f"🔄 [3] جاري طلب الباركود عبر الرابط: {connect_url}")
+            connect_resp = await client.get(connect_url, headers=headers)
+            print(f"📥 [3] استجابة الباركود | الكود: {connect_resp.status_code}")
             
             if connect_resp.status_code == 200:
                 data = connect_resp.json()
@@ -1535,59 +1552,86 @@ async def get_whatsapp_qr(store_id: str, session_name: str = "main"):
                 if qr_base64:
                     if not qr_base64.startswith("data:image"):
                         qr_base64 = f"data:image/png;base64,{qr_base64}"
+                    print("✅ [3] تم تجهيز الباركود بنجاح!")
                     return {"status": "ready", "qr_code": qr_base64, "instance_name": instance_id}
+                
+                print("⚠️ [3] السيرفر استجاب 200 لكن لم يرسل Base64.")
+            else:
+                print(f"❌ [3] فشل طلب الباركود | النص: {connect_resp.text}")
 
-            return {"status": "processing", "message": "جاري تجهيز الباركود، انتظر ثوانٍ..."}
+            return {"status": "processing", "message": "جاري تجهيز الباركود، انتظر ثوانٍ وجرب التحديث."}
 
         except Exception as e:
+            print(f"🚨 [خطأ استثنائي] {str(e)}")
             return {"status": "error", "message": f"خطأ في النظام: {str(e)}"}
 
-# 2. دالة كود الربط
+
+# 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
-    headers = {"apikey": os.getenv("WHATSAPP_API_KEY"), "Content-Type": "application/json"}
     clean_phone = "".join(filter(str.isdigit, phone))
+    instance_id = f"{store_id}_{clean_phone[-4:]}"
+    print(f"\n{'='*50}\n📱 [BACKEND - PAIRING] بدء طلب كود ربط للجلسة: {instance_id}\n{'='*50}")
     
-    # اسم الجلسة سيكون مرتبطاً برقم الهاتف لضمان التعدد
-    instance_id = f"{store_id}_{clean_phone[-4:]}" # نستخدم آخر 4 أرقام للتمييز
+    whatsapp_url = os.getenv("WHATSAPP_URL", "").rstrip("/")
+    api_key = os.getenv("WHATSAPP_API_KEY")
+    headers = {"apikey": api_key, "Content-Type": "application/json"}
     
-    async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
+    async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
         try:
-            # 1. فحص هل الجلسة موجودة؟
-            status_resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{instance_id}", headers=headers)
+            # --- الخطوة 1: الفحص ---
+            status_url = f"{whatsapp_url}/instance/connectionState/{instance_id}"
+            print(f"🔍 [1] فحص الجلسة: {status_url}")
+            status_resp = await client.get(status_url, headers=headers)
+            print(f"📥 [1] استجابة الفحص | الكود: {status_resp.status_code}")
             
-            # 2. إنشاء الجلسة فقط إذا لم تكن موجودة (تجنب الحذف تماماً)
+            # --- الخطوة 2: الإنشاء ---
             if status_resp.status_code == 404:
-                print(f"🏗️ إنشاء جلسة ربط جديدة للرقم: {clean_phone}")
+                print(f"🏗️ [2] الجلسة غير موجودة. جاري الإنشاء للرقم: {clean_phone}")
                 create_payload = {
                     "instanceName": instance_id,
-                    "token": os.getenv("WHATSAPP_API_KEY"),
+                    "token": api_key,
                     "qrcode": False,
                     "number": clean_phone,
                     "integration": "WHATSAPP-BAILEYS"
                 }
-                await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-                await asyncio.sleep(4.0)
+                create_url = f"{whatsapp_url}/instance/create"
+                print(f"📡 [2] بيانات الإنشاء: {create_payload}")
+                
+                create_resp = await client.post(create_url, json=create_payload, headers=headers)
+                print(f"📥 [2] استجابة الإنشاء | الكود: {create_resp.status_code} | النص: {create_resp.text}")
+                
+                if create_resp.status_code not in [200, 201]:
+                    return {"status": "error", "message": f"فشل الإنشاء (الخطأ {create_resp.status_code}): {create_resp.text}"}
+                
+                print("⏳ [2] ننتظر 5 ثوانٍ لتهيئة الجلسة برقم الهاتف...")
+                await asyncio.sleep(5.0)
 
-            # 3. طلب كود الربط
-            connect_url = f"{WHATSAPP_URL}/instance/connect/{instance_id}?number={clean_phone}"
+            # --- الخطوة 3: طلب الكود ---
+            connect_url = f"{whatsapp_url}/instance/connect/{instance_id}?number={clean_phone}"
+            print(f"🔄 [3] جاري طلب كود الربط: {connect_url}")
             qr_resp = await client.get(connect_url, headers=headers)
+            print(f"📥 [3] استجابة طلب الكود | الكود: {qr_resp.status_code}")
             
             if qr_resp.status_code == 200:
                 data = qr_resp.json()
                 pairing_code = data.get("code") or data.get("pairingCode")
                 if pairing_code:
+                    print(f"✅ [3] تم استلام كود الربط: {pairing_code}")
                     return {
                         "status": "success", 
                         "pairing_code": pairing_code, 
                         "instance_name": instance_id
                     }
+                print(f"⚠️ [3] الكود غير متوفر في الرد: {data}")
+            else:
+                print(f"❌ [3] فشل طلب الكود | النص: {qr_resp.text}")
             
             return {"status": "error", "message": "فشل توليد الكود. قد تكون الجلسة مشغولة، جرب بعد ثوانٍ."}
 
         except Exception as e:
+            print(f"🚨 [خطأ استثنائي] {str(e)}")
             return {"status": "error", "message": str(e)}
-
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
     # إعداد البيانات للـ Evolution API
