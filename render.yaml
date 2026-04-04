@@ -2,20 +2,35 @@ services:
   - type: web
     name: salla-ai-bot
     env: docker
-    plan: free # أو starter حسب رغبتك
-    region: frankfurt # اختر المنطقة الأقرب لك
+    plan: free 
+    region: frankfurt
+    healthCheckPath: /
     envVars:
+      # قاعدة البيانات والذكاء الاصطناعي
       - key: DATABASE_URL
         sync: false
-      - key: GROQ_API_KEY # تأكد من مطابقة الاسم في الكود (GROQ وليس GROK)
+      - key: GROQ_API_KEY
         sync: false
-      - key: WHATSAPP_URL
-        sync: false # رابط سيرفر ايفولوشن الخاص بك
-      - key: WHATSAPP_API_KEY
-        sync: false # مفتاح الأمان للسيرفر
+      
+      # إعدادات سلة (Salla)
       - key: SALLA_CLIENT_ID
         sync: false
       - key: SALLA_CLIENT_SECRET
         sync: false
       - key: SALLA_WEBHOOK_SECRET
         sync: false
+
+      # إعدادات واتساب (Baileys Direct)
+      # لاحظ: لم نعد بحاجة لـ WHATSAPP_URL الخارجي لأن السيرفر أصبح "داخلياً"
+      - key: SESSION_PATH
+        value: /app/sessions 
+      
+      # متغيرات البيئة لبايثون
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+    # --- الجزء الأهم لضمان استمرار الاتصال ---
+    disk:
+      name: whatsapp-sessions
+      mountPath: /app/sessions
+      sizeGB: 1
