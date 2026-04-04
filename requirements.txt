@@ -8,6 +8,7 @@ aiofiles
 jinja2
 python-dotenv
 pydantic
+supabase
 pycryptodome
 qrcode[pil]
 Pillow
