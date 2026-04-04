@@ -1497,7 +1497,7 @@ async def get_whatsapp_qr(store_id: str, session_name: str = "main"):
     
     headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
     
-    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+    async with httpx.AsyncClient(verify=False, timeout=100.0) as client:
         try:
             # الخطوة 1: فحص هل الجلسة موجودة أصلاً؟
             status_url = f"{WHATSAPP_URL}/instance/connectionState/{instance_id}"
@@ -1524,7 +1524,7 @@ async def get_whatsapp_qr(store_id: str, session_name: str = "main"):
                     "integration": "WHATSAPP-BAILEYS"
                 }
                 await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-                await asyncio.sleep(3.0) # وقت بسيط للتهيئة
+                await asyncio.sleep(60.0) # وقت بسيط للتهيئة
 
             # الخطوة 3: طلب الربط (عرض الباركود) للجلسة القائمة أو الجديدة
             connect_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{instance_id}", headers=headers)
