@@ -1,31 +1,33 @@
 # الأساسيات والإطار البرمجي
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.6
+fastapi
+uvicorn[standard]
+python-multipart
 
 # قاعدة البيانات (PostgreSQL & Supabase)
-sqlalchemy==2.0.25
-psycopg2-binary==2.9.9
-supabase==2.3.0
+# نترك pip يختار الإصدار المتوافق مع httpx تلقائياً
+sqlalchemy
+psycopg2-binary
+supabase
 
-# التعامل مع الطلبات والملفات (Async)
-httpx==0.26.0
-aiofiles==23.2.1
-requests==2.31.0
+# التعامل مع الطلبات والملفات
+# أزلنا التحديد القاسي هنا لحل صراع supabase
+httpx
+aiofiles
+requests
 
 # القوالب والبيئة
-jinja2==3.1.3
-python-dotenv==1.0.1
-pydantic==2.6.0
-pydantic-settings==2.1.0
+jinja2
+python-dotenv
+pydantic
+pydantic-settings
 
 # الأمان والتشفير
-pycryptodome==3.20.0
-python-slugify==8.0.4
+pycryptodome
+python-slugify
 
 # معالجة الصور والباركود (مهمة لـ Baileys Direct)
-qrcode[pil]==7.4.2
-Pillow==10.2.0
+qrcode[pil]
+Pillow
 
-# التوقيت والتعامل مع التواريخ
-python-dateutil==2.8.2
+# التوقيت
+python-dateutil
