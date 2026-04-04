@@ -1515,60 +1515,72 @@ async def update_config(store_id: str, settings: dict):
 async def get_whatsapp_qr(store_id: str):
     print(f"\n{'='*40}\n🚀 [BACKEND] بدء طلب الباركود للمتجر: {store_id}\n{'='*40}")
     headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
-    print(f"🔑 [BACKEND] التوكن المستخدم: {headers['apikey'][:8]}...")
     
     async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
         try:
-            # الخطوة 1: التحقق
+            # الخطوة 1: فحص حالة الجلسة (التحقق من الـ State فعلياً وليس فقط الـ Status Code)
             status_url = f"{WHATSAPP_URL}/instance/connectionState/{store_id}"
             print(f"📡 [BACKEND] خطوة 1: فحص حالة الجلسة عبر {status_url}")
             status_resp = await client.get(status_url, headers=headers)
-            print(f"📥 [BACKEND] خطوة 1 (الرد): {status_resp.status_code} - {status_resp.text}")
             
-            # الخطوة 2: الإنشاء
-            if status_resp.status_code in [404, 500, 400]:
-                print(f"🏗️ [BACKEND] خطوة 2: الجلسة غير جاهزة. جاري إرسال طلب Create...")
+            is_instance_broken = False
+            if status_resp.status_code == 200:
+                data = status_resp.json()
+                # إذا رد بـ 200 ولكن لا يوجد كائن instance أو لا يوجد state، الجلسة معطوبة
+                if not data.get("instance") or "state" not in data["instance"]:
+                    print("⚠️ [BACKEND] الجلسة موجودة كاسم ولكنها معطوبة (No State). سيتم حذفها.")
+                    is_instance_broken = True
+            else:
+                is_instance_broken = True
+
+            # الخطوة 2: الحذف والإنشاء النظيف (Clean Slate)
+            if is_instance_broken:
+                print(f"🏗️ [BACKEND] خطوة 2: جاري تنظيف الجلسة القديمة والبدء من الصفر...")
+                # محاولة حذف الجلسة لضمان عدم وجود تضارب في السيرفر
+                await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
+                
                 create_payload = {
                     "instanceName": store_id,
                     "token": os.getenv("WHATSAPP_API_KEY"),
                     "qrcode": True,
                     "integration": "WHATSAPP-BAILEYS"
                 }
-                print(f"📤 [BACKEND] خطوة 2 (البيانات): {create_payload}")
                 create_resp = await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-                print(f"📥 [BACKEND] خطوة 2 (رد الإنشاء): {create_resp.status_code} - {create_resp.text}")
+                print(f"📥 [BACKEND] خطوة 2 (رد الإنشاء): {create_resp.status_code}")
                 
-                print("⏳ [BACKEND] انتظار 4 ثواني لاستقرار قاعدة البيانات...")
-                await asyncio.sleep(4.0)
+                # وقت أطول قليلاً للسيرفر لإنشاء مجلدات الجلسة في النظام
+                print("⏳ [BACKEND] انتظار 5 ثواني لاستقرار النظام...")
+                await asyncio.sleep(5.0)
             else:
-                print("✅ [BACKEND] خطوة 2: الجلسة موجودة مسبقاً، نتخطى الإنشاء.")
+                print("✅ [BACKEND] خطوة 2: الجلسة سليمة، نتخطى الإنشاء.")
             
-            # الخطوة 3: جلب الباركود
+            # الخطوة 3: طلب الربط (Connect)
             print(f"📡 [BACKEND] خطوة 3: طلب بيانات الربط (Connect)...")
             connect_url = f"{WHATSAPP_URL}/instance/connect/{store_id}"
             connect_resp = await client.get(connect_url, headers=headers)
-            # نقص الكود المطبوع لتجنب تعليق الشاشة بنص الـ Base64 الطويل
-            print(f"📥 [BACKEND] خطوة 3 (رد الربط): {connect_resp.status_code} - {connect_resp.text[:150]}... (تم القص)")
             
+            # التعامل مع خطأ [object Object] الشهير
+            if "[object Object]" in connect_resp.text:
+                print("❌ [BACKEND] فشل السيرفر داخلياً (Prisma Error). تأكد من تحديث جداول قاعدة البيانات (updatedAt).")
+                return {"status": "error", "message": "خلل في قاعدة بيانات السيرفر، يرجى مراجعة المسؤول."}
+
             if connect_resp.status_code == 200:
                 data = connect_resp.json()
                 qr_base64 = data.get("base64") or data.get("qrcode", {}).get("base64")
                 
                 if qr_base64:
-                    print("✅ [BACKEND] خطوة 4: تم العثور على الباركود بنجاح!")
                     if not qr_base64.startswith("data:image"):
                         qr_base64 = f"data:image/png;base64,{qr_base64}"
                     return {"status": "ready", "qr_code": qr_base64}
                 
-                state = data.get("instance", {}).get("state") or data.get("status")
-                print(f"⚠️ [BACKEND] خطوة 4: لم يتم العثور على باركود. حالة الجلسة: {state}")
-                if state in ["open", "CONNECTED"]:
+                # فحص ما إذا كان العميل قد ربط بالفعل
+                if data.get("instance", {}).get("state") == "open":
                     return {"status": "connected", "message": "متصل بنجاح ✅"}
 
-            return {"status": "processing", "message": "جاري التجهيز، يرجى المحاولة بعد ثواني."}
+            return {"status": "processing", "message": "جاري تجهيز الباركود، يرجى التحديث بعد قليل."}
 
         except Exception as e:
-            print(f"❌ [BACKEND] خطأ برمجي/استثناء في get-qr: {str(e)}")
+            print(f"❌ [BACKEND] استثناء: {str(e)}")
             return {"status": "error", "message": str(e)}
 
 # 2. دالة كود الربط
@@ -1576,45 +1588,77 @@ async def get_whatsapp_qr(store_id: str):
 async def link_phone_auto_logic(store_id: str, phone: str):
     print(f"\n{'='*40}\n📱 [BACKEND] بدء طلب كود الربط للمتجر: {store_id} | الرقم: {phone}\n{'='*40}")
     headers = {"apikey": os.getenv("WHATSAPP_API_KEY"), "Content-Type": "application/json"}
+    
+    # تنظيف الرقم لضمان عدم وجود مسافات أو رموز
     clean_phone = "".join(filter(str.isdigit, phone))
     
-    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+    async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
         try:
+            # الخطوة 1: فحص عميق للجلسة
+            status_url = f"{WHATSAPP_URL}/instance/connectionState/{store_id}"
             print(f"📡 [BACKEND] خطوة 1: فحص حالة الجلسة...")
-            status_resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{store_id}", headers=headers)
-            print(f"📥 [BACKEND] خطوة 1 (الرد): {status_resp.status_code}")
+            status_resp = await client.get(status_url, headers=headers)
             
-            if status_resp.status_code in [404, 500, 400]:
-                print(f"🏗️ [BACKEND] خطوة 2: إنشاء الجلسة برقم الجوال...")
+            should_recreate = False
+            if status_resp.status_code == 200:
+                data = status_resp.json()
+                # إذا كانت الجلسة موجودة ولكنها لا تملك حالة "state"، فهي معطوبة ويجب حذفها
+                if not data.get("instance") or "state" not in data["instance"]:
+                    print("⚠️ [BACKEND] الجلسة موجودة كاسم ولكنها معطوبة. سيتم إعادة التهيئة.")
+                    should_recreate = True
+            else:
+                should_recreate = True
+
+            # الخطوة 2: التنظيف والإنشاء (Clean Slate)
+            if should_recreate:
+                print(f"🏗️ [BACKEND] خطوة 2: جاري حذف وإنشاء جلسة جديدة للربط بالكود...")
+                # حذف أي بقايا للجلسة القديمة
+                await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
+                
                 create_payload = {
                     "instanceName": store_id,
                     "token": os.getenv("WHATSAPP_API_KEY"),
-                    "qrcode": False,
+                    "qrcode": False, # هام: نضع False لأننا نريد كود ربط وليس QR
                     "number": clean_phone,
                     "integration": "WHATSAPP-BAILEYS"
                 }
                 create_resp = await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-                print(f"📥 [BACKEND] خطوة 2 (رد الإنشاء): {create_resp.status_code} - {create_resp.text}")
-                await asyncio.sleep(4.0)
+                print(f"📥 [BACKEND] خطوة 2 (رد الإنشاء): {create_resp.status_code}")
+                
+                # وقت كافٍ للسيرفر لتهيئة العميل (Baileys)
+                print("⏳ [BACKEND] انتظار 6 ثواني لتهيئة نظام الربط...")
+                await asyncio.sleep(6.0)
 
-            print(f"📡 [BACKEND] خطوة 3: طلب الكود...")
+            # الخطوة 3: طلب الكود (Pairing Code)
+            print(f"📡 [BACKEND] خطوة 3: طلب الكود للرقم {clean_phone}...")
+            # ملحوظة: في v2 المسار الصحيح هو إضافة الرقم كـ Query Parameter
             connect_url = f"{WHATSAPP_URL}/instance/connect/{store_id}?number={clean_phone}"
             qr_resp = await client.get(connect_url, headers=headers)
-            print(f"📥 [BACKEND] خطوة 3 (رد طلب الكود): {qr_resp.status_code} - {qr_resp.text}")
+            
+            # فحص ردود الخطأ الشهيرة
+            if "[object Object]" in qr_resp.text:
+                print("❌ [BACKEND] فشل داخلي في السيرفر (Prisma/DB Error).")
+                return {"status": "error", "message": "فشل السيرفر في توليد الكود، تأكد من تحديث الجداول (updatedAt)."}
+
+            print(f"📥 [BACKEND] خطوة 3 (الرد): {qr_resp.status_code}")
             
             if qr_resp.status_code == 200:
                 data = qr_resp.json()
-                if "code" in data:
-                    print(f"✅ [BACKEND] خطوة 4: تم جلب الكود: {data['code']}")
-                    return {"status": "success", "pairing_code": data["code"]}
                 
-                print(f"⚠️ [BACKEND] خطوة 4: رد ناجح لكن الكود مفقود! البيانات: {data}")
-                return {"status": "error", "message": data.get("message", "الكود غير متاح حالياً")}
+                # استخراج الكود من المسارات المحتملة في v2
+                pairing_code = data.get("code") or data.get("pairingCode")
+                
+                if pairing_code:
+                    print(f"✅ [BACKEND] خطوة 4: تم جلب الكود بنجاح: {pairing_code}")
+                    return {"status": "success", "pairing_code": pairing_code}
+                
+                print(f"⚠️ [BACKEND] خطوة 4: رد ناجح ولكن الكود مفقود. البيانات: {data}")
+                return {"status": "error", "message": "الكود غير متاح، حاول مرة أخرى خلال لحظات."}
             
-            return {"status": "error", "message": f"فشل الاتصال: {qr_resp.status_code}"}
+            return {"status": "error", "message": f"خطأ من السيرفر: {qr_resp.status_code}"}
 
         except Exception as e:
-            print(f"❌ [BACKEND] خطأ برمجي/استثناء في link-phone: {str(e)}")
+            print(f"❌ [BACKEND] استثناء في link-phone: {str(e)}")
             return {"status": "error", "message": str(e)}
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
