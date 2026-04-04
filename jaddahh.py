@@ -1534,10 +1534,17 @@ async def get_whatsapp_qr(store_id: str):
                 is_instance_broken = True
 
             # الخطوة 2: الحذف والإنشاء النظيف (Clean Slate)
+        # الخطوة 2: الحذف والإنشاء النظيف (Clean Slate)
             if is_instance_broken:
-                print(f"🏗️ [BACKEND] خطوة 2: جاري تنظيف الجلسة القديمة والبدء من الصفر...")
-                # محاولة حذف الجلسة لضمان عدم وجود تضارب في السيرفر
-                await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
+                print(f"🏗️ [BACKEND] خطوة 2: جاري تنظيف الجلسة القديمة...")
+                
+                try:
+                    # يجب أن تكون هذه الأسطر مزاحة للداخل لتتبع الـ if
+                    await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
+                    print("🗑️ تم طلب حذف الجلسة بنجاح أو السجل غير موجود.")
+                except Exception as delete_error:
+                    print(f"ℹ️ تنبيه: تخطي خطأ الحذف (السجل قد لا يكون موجوداً): {delete_error}")
+ 
                 
                 create_payload = {
                     "instanceName": store_id,
@@ -1610,10 +1617,18 @@ async def link_phone_auto_logic(store_id: str, phone: str):
                 should_recreate = True
 
             # الخطوة 2: التنظيف والإنشاء (Clean Slate)
+        # الخطوة 2: التنظيف والإنشاء (Clean Slate)
             if should_recreate:
-                print(f"🏗️ [BACKEND] خطوة 2: جاري حذف وإنشاء جلسة جديدة للربط بالكود...")
-                # حذف أي بقايا للجلسة القديمة
-                await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
+                print(f"🏗️ [BACKEND] خطوة 2: جاري حذف وإنشاء جلسة جديدة...")
+                
+                try:
+                    await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
+                    print("🗑️ تم التنظيف بنجاح.")
+                except Exception as delete_error:
+                    print(f"ℹ️ تخطي الحذف: {delete_error}")
+
+
+   
                 
                 create_payload = {
                     "instanceName": store_id,
@@ -1660,7 +1675,6 @@ async def link_phone_auto_logic(store_id: str, phone: str):
         except Exception as e:
             print(f"❌ [BACKEND] استثناء في link-phone: {str(e)}")
             return {"status": "error", "message": str(e)}
-
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
     # إعداد البيانات للـ Evolution API
     url = f"{WHATSAPP_URL}/message/sendText/{store_id}"
