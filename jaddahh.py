@@ -1490,62 +1490,57 @@ async def update_config(store_id: str, settings: dict):
 
 # 1. دالة الباركود
 @app.get("/admin/get-qr/{store_id}")
-async def get_whatsapp_qr(store_id: str):
-    print(f"\n{'='*40}\n🚀 [BACKEND] طلب باركود للمتجر: {store_id}\n{'='*40}")
+async def get_whatsapp_qr(store_id: str, session_name: str = "main"):
+    # ندمج المعرف مع اسم الجلسة ليكون فريداً (مثلاً: 12345_main)
+    instance_id = f"{store_id}_{session_name}"
+    print(f"\n🚀 [BACKEND] طلب باركود للجلسة: {instance_id}")
+    
     headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
     
     async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
         try:
-            # الخطوة 1: فحص الحالة
-            status_url = f"{WHATSAPP_URL}/instance/connectionState/{store_id}"
+            # الخطوة 1: فحص هل الجلسة موجودة أصلاً؟
+            status_url = f"{WHATSAPP_URL}/instance/connectionState/{instance_id}"
             status_resp = await client.get(status_url, headers=headers)
             
-            is_instance_broken = True
+            # إذا الجلسة موجودة (Status 200)
             if status_resp.status_code == 200:
                 data = status_resp.json()
-                if data.get("instance") and "state" in data["instance"]:
-                    is_instance_broken = False
-
-            # الخطوة 2: التنظيف والإنشاء (Clean Slate)
-            if is_instance_broken:
-                print(f"🏗️ [BACKEND] جاري التنظيف والتهيئة...")
+                state = data.get("instance", {}).get("state")
                 
-                # لتجنب خطأ Prisma P2025: نفحص أولاً إذا كانت الجلسة موجودة قبل الحذف
-                if status_resp.status_code != 404:
-                    await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
-                    print("🗑️ تم حذف السجل القديم.")
-                    await asyncio.sleep(2.0) # فاصة زمنية لترتاح قاعدة البيانات
+                if state == "open":
+                    return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
                 
+                # إذا كانت موجودة ولكن غير متصلة، نطلب الباركود مباشرة دون حذف
+                print(f"🔄 الجلسة {instance_id} موجودة ولكنها غير متصلة. جاري طلب باركود...")
+            
+            # الخطوة 2: إذا كانت الجلسة غير موجودة (404)، ننشئها
+            elif status_resp.status_code == 404:
+                print(f"🏗️ إنشاء جلسة جديدة: {instance_id}")
                 create_payload = {
-                    "instanceName": store_id,
+                    "instanceName": instance_id,
                     "token": os.getenv("WHATSAPP_API_KEY"),
                     "qrcode": True,
                     "integration": "WHATSAPP-BAILEYS"
                 }
                 await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-                await asyncio.sleep(4.0) # وقت لبناء الملفات
-            
-            # الخطوة 3: الربط
-            connect_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{store_id}", headers=headers)
-            
-            if "[object Object]" in connect_resp.text:
-                return {"status": "error", "message": "خلل مؤقت في السيرفر، جاري الإصلاح التلقائي."}
+                await asyncio.sleep(3.0) # وقت بسيط للتهيئة
 
+            # الخطوة 3: طلب الربط (عرض الباركود) للجلسة القائمة أو الجديدة
+            connect_resp = await client.get(f"{WHATSAPP_URL}/instance/connect/{instance_id}", headers=headers)
+            
             if connect_resp.status_code == 200:
                 data = connect_resp.json()
                 qr_base64 = data.get("base64") or data.get("qrcode", {}).get("base64")
                 if qr_base64:
                     if not qr_base64.startswith("data:image"):
                         qr_base64 = f"data:image/png;base64,{qr_base64}"
-                    return {"status": "ready", "qr_code": qr_base64}
-                
-                if data.get("instance", {}).get("state") == "open":
-                    return {"status": "connected", "message": "متصل بنجاح ✅"}
+                    return {"status": "ready", "qr_code": qr_base64, "instance_name": instance_id}
 
-            return {"status": "processing", "message": "جاري التجهيز، حدث الصفحة."}
+            return {"status": "processing", "message": "جاري تجهيز الباركود، انتظر ثوانٍ..."}
 
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": f"خطأ في النظام: {str(e)}"}
 
 # 2. دالة كود الربط
 @app.get("/admin/link-phone/{store_id}")
@@ -1553,43 +1548,47 @@ async def link_phone_auto_logic(store_id: str, phone: str):
     headers = {"apikey": os.getenv("WHATSAPP_API_KEY"), "Content-Type": "application/json"}
     clean_phone = "".join(filter(str.isdigit, phone))
     
+    # اسم الجلسة سيكون مرتبطاً برقم الهاتف لضمان التعدد
+    instance_id = f"{store_id}_{clean_phone[-4:]}" # نستخدم آخر 4 أرقام للتمييز
+    
     async with httpx.AsyncClient(verify=False, timeout=40.0) as client:
         try:
-            # 1. فحص هل الجلسة موجودة أصلاً؟
-            status_resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{store_id}", headers=headers)
+            # 1. فحص هل الجلسة موجودة؟
+            status_resp = await client.get(f"{WHATSAPP_URL}/instance/connectionState/{instance_id}", headers=headers)
             
-            # 2. حذف ذكي (فقط إذا كانت موجودة) لتجنب Prisma Error
-            if status_resp.status_code != 404:
-                print(f"🗑️ [BACKEND] حذف جلسة سابقة لتجنب التداخل...")
-                await client.delete(f"{WHATSAPP_URL}/instance/delete/{store_id}", headers=headers)
-                await asyncio.sleep(2.5) # ضروري جداً لـ Prisma
+            # 2. إنشاء الجلسة فقط إذا لم تكن موجودة (تجنب الحذف تماماً)
+            if status_resp.status_code == 404:
+                print(f"🏗️ إنشاء جلسة ربط جديدة للرقم: {clean_phone}")
+                create_payload = {
+                    "instanceName": instance_id,
+                    "token": os.getenv("WHATSAPP_API_KEY"),
+                    "qrcode": False,
+                    "number": clean_phone,
+                    "integration": "WHATSAPP-BAILEYS"
+                }
+                await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
+                await asyncio.sleep(4.0)
 
-            # 3. إنشاء جديد
-            create_payload = {
-                "instanceName": store_id,
-                "token": os.getenv("WHATSAPP_API_KEY"),
-                "qrcode": False,
-                "number": clean_phone,
-                "integration": "WHATSAPP-BAILEYS"
-            }
-            await client.post(f"{WHATSAPP_URL}/instance/create", json=create_payload, headers=headers)
-            print("⏳ انتظار تهيئة Baileys...")
-            await asyncio.sleep(5.0)
-
-            # 4. طلب الكود
-            connect_url = f"{WHATSAPP_URL}/instance/connect/{store_id}?number={clean_phone}"
+            # 3. طلب كود الربط
+            connect_url = f"{WHATSAPP_URL}/instance/connect/{instance_id}?number={clean_phone}"
             qr_resp = await client.get(connect_url, headers=headers)
             
             if qr_resp.status_code == 200:
                 data = qr_resp.json()
                 pairing_code = data.get("code") or data.get("pairingCode")
                 if pairing_code:
-                    return {"status": "success", "pairing_code": pairing_code}
+                    return {
+                        "status": "success", 
+                        "pairing_code": pairing_code, 
+                        "instance_name": instance_id
+                    }
             
-            return {"status": "error", "message": "فشل توليد الكود، حاول مرة أخرى."}
+            return {"status": "error", "message": "فشل توليد الكود. قد تكون الجلسة مشغولة، جرب بعد ثوانٍ."}
 
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
     # إعداد البيانات للـ Evolution API
     url = f"{WHATSAPP_URL}/message/sendText/{store_id}"
