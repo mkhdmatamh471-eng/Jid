@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timedelta
 import logging
+import subprocess
 import urllib.parse
 from fastapi import APIRouter
 
@@ -103,69 +104,45 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # --- استبدل قسم المتصفح القديم بهذا الكود ---
 
 # --- قسم Baileys الجديد ---
-WHATSAPP_URL = os.getenv("WHATSAPP_URL")
-WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY") # تأكد من إضافة هذا المتغير في ريندر
 
-class BaileysHandler:
+
+class BaileysDirectHandler:
     def __init__(self, store_id: str):
         self.store_id = store_id
-        # نجهز الهيدر مرة واحدة لاستخدامه في كل الطلبات
-        self.headers = {
-            "apikey": WHATSAPP_API_KEY,
-            "Content-Type": "application/json"
-        }
+        self.process = None
+
+    async def start_session(self):
+        """تشغيل عملية Node.js للجلسة"""
+        # تشغيل ملف الـ js كعملية فرعية
+        self.process = subprocess.Popen(
+            ["node", "wa-bridge.js", self.store_id],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        logger.info(f"🚀 Started Baileys Direct for Store: {self.store_id}")
 
     async def send_text(self, phone: str, text: str):
-        # استخدمنا verify=False لتجاوز خطأ SSL Certificate الذي ظهر في الـ Logs
-        async with httpx.AsyncClient(verify=False) as client:
-            try:
-                clean_phone = "".join(filter(str.isdigit, phone))
-                
-                # المسار الصحيح لـ Evolution API لإرسال رسالة نصية
-                url = f"{WHATSAPP_URL}/message/sendText/{self.store_id}"
-                
-                payload = {
-                    "number": clean_phone,
-                    "options": {
-                        "delay": 1200, 
-                        "presence": "composing",
-                        "linkPreview": False
-                    },
-                    "textMessage": {"text": text}
-                }
+        """إرسال أمر للملف البرمجي Node.js"""
+        clean_phone = "".join(filter(str.isdigit, phone))
+        jid = f"{clean_phone}@s.whatsapp.net"
+        
+        if self.process and self.process.poll() is None:
+            # إرسال الأمر عبر stdin
+            command = f"SEND:{jid}|{text}\n"
+            self.process.stdin.write(command)
+            self.process.stdin.flush()
+            return True
+        else:
+            # إذا لم تكن الجلسة تعمل، نشغلها ونحاول الإرسال
+            await self.start_session()
+            return False
 
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers=self.headers,
-                    timeout=20.0
-                )
-                
-                if response.status_code in [200, 201]:
-                    return True
-                else:
-                    logger.error(f"❌ Evolution Error: {response.text}")
-                    return False
-            except Exception as e:
-                logger.error(f"❌ Baileys Send Error: {e}")
-                return False
-
-    async def get_status(self):
-        async with httpx.AsyncClient(verify=False) as client:
-            try:
-                # التحقق من حالة الاتصال (هل الرقم مربوط أم لا)
-                url = f"{WHATSAPP_URL}/instance/connectionState/{self.store_id}"
-                resp = await client.get(url, headers=self.headers)
-                data = resp.json()
-                # Evolution تعيد الحالة في حقل instance.state
-                return data.get("instance", {}).get("state") == "open"
-            except Exception as e:
-                logger.error(f"❌ Status Check Error: {e}")
-                return False
-
+# استبدل الـ Handler القديم في كودك بهذا
 async def get_handler_for_store(store_id: str):
-    return BaileysHandler(store_id)
-    
+    return BaileysDirectHandler(store_id)
+
 def execute_db_query(query: str, params: dict = None, fetch: str = None):
     """
     نسخة احترافية تدعم التراجع التلقائي في حال الخطأ (Rollback)
