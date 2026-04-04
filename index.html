@@ -368,7 +368,9 @@ function switchLinkMode(mode) {
 }
 
 // توليد QR Code
+// 1. دالة تحديث الباركود
 async function refreshQR() {
+    console.log("🟢 [FRONTEND] بدء طلب refreshQR()");
     const qrImage = document.getElementById('qr-image');
     const qrBox = document.getElementById('qr-box');
     qrBox.classList.add("animate-pulse");
@@ -378,32 +380,48 @@ async function refreshQR() {
     const maxAttempts = 3;
 
     async function fetchWithRetry() {
+        console.log(`🔄 [FRONTEND] المحاولة رقم: ${attempts + 1}`);
         try {
             if (attempts === 0) await delay(2000); 
+            
+            console.log(`🌐 [FRONTEND] إرسال Fetch إلى: /admin/get-qr/${storeId}`);
             const response = await fetch(`/admin/get-qr/${storeId}`);
-            if (!response.ok) throw new Error("Server not ready");
+            console.log(`📥 [FRONTEND] حالة الرد: ${response.status}`);
+            
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`❌ [FRONTEND] رد غير ناجح من السيرفر:`, errText);
+                throw new Error(`Server Error: ${response.status}`);
+            }
+            
             const data = await response.json();
+            console.log(`📦 [FRONTEND] البيانات المستلمة:`, data);
 
             if (data.qr_code) {
+                console.log("✅ [FRONTEND] تم تعيين صورة الباركود بنجاح.");
                 qrImage.src = data.qr_code;
                 return true;
             } 
             if (data.status === "connected") {
+                console.log("✅ [FRONTEND] المتجر متصل بالفعل.");
                 qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
                 return true;
             }
+            
+            console.warn(`⚠️ [FRONTEND] الرد لم يحتوي على باركود. الحالة: ${data.status}`);
             if (attempts < maxAttempts) {
                 attempts++;
                 await delay(3000); 
                 return await fetchWithRetry();
             }
         } catch (err) {
+            console.error(`❌ [FRONTEND] خطأ أثناء جلب الباركود:`, err);
             if (attempts < maxAttempts) {
                 attempts++;
                 await delay(3000);
                 return await fetchWithRetry();
             }
-            showToast("❌ فشل الاتصال بالسيرفر، جرب مرة أخرى", false);
+            showToast("❌ فشل الاتصال بالسيرفر، انظر الكونسول للتفاصيل", false);
         }
         return false;
     }
@@ -411,60 +429,64 @@ async function refreshQR() {
     await fetchWithRetry();
     qrBox.classList.remove("animate-pulse");
     qrImage.style.filter = "none";
+    console.log("🏁 [FRONTEND] انتهاء دورة refreshQR()");
 }
 
-// طلب كود الربط (Pairing Code)
+// 2. دالة كود الربط
 async function requestPairingCode() {
+    console.log("🟢 [FRONTEND] بدء طلب requestPairingCode()");
     const phoneInput = document.getElementById('waPairingPhone').value.trim();
     const btn = document.getElementById('btnPairing');
     const displayContainer = document.getElementById('pairingCodeDisplay');
     const codeValueEl = document.getElementById('pairingCodeValue');
 
     if (!phoneInput) {
+        console.warn("⚠️ [FRONTEND] لم يتم إدخال رقم.");
         showToast("⚠️ يرجى إدخال رقم الواتساب بالصيغة الدولية (بدون +)", false);
         return;
     }
 
-    // تنظيف الرقم من المسافات أو علامة + في حال أدخلها المستخدم
     const cleanPhone = phoneInput.replace(/\D/g, '');
+    console.log(`📱 [FRONTEND] الرقم المنظف للإرسال: ${cleanPhone}`);
 
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جاري الطلب...';
     btn.disabled = true;
 
     try {
-        // نستخدم GET لأن المسار الذي اقترحناه في الـ Backend هو @app.get
-        // ونمرر الرقم كـ Query Parameter
-        const response = await fetch(`/admin/link-phone/${storeId}?phone=${cleanPhone}`);
+        const url = `/admin/link-phone/${storeId}?phone=${cleanPhone}`;
+        console.log(`🌐 [FRONTEND] إرسال Fetch إلى: ${url}`);
+        const response = await fetch(url);
+        console.log(`📥 [FRONTEND] حالة الرد: ${response.status}`);
 
         if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.message || "فشل توليد الكود");
+            const errorData = await response.json().catch(() => ({}));
+            console.error(`❌ [FRONTEND] السيرفر أرجع خطأ:`, errorData);
+            const msg = errorData.response?.message?.[0] || errorData.message || "فشل غير معروف";
+            throw new Error(msg);
         }
         
         const data = await response.json();
+        console.log(`📦 [FRONTEND] البيانات المستلمة:`, data);
 
         if (data.status === "success" && data.pairing_code) {
-            // تنسيق الكود: ABCDEFGH -> ABCD-EFGH لسهولة القراءة
+            console.log(`✅ [FRONTEND] تم استلام الكود: ${data.pairing_code}`);
             const code = data.pairing_code;
-            const formattedCode = code.length === 8 ? 
-                `${code.substring(0, 4)}-${code.substring(4)}` : code;
-            
+            const formattedCode = code.length === 8 ? `${code.substring(0, 4)}-${code.substring(4)}` : code;
             codeValueEl.innerText = formattedCode;
-            
-            // إظهار الحاوية مع أنيميشن بسيط
             displayContainer.classList.remove('hidden');
             displayContainer.style.display = 'block'; 
-            
             showToast("✅ تم توليد كود الربط بنجاح");
         } else {
+            console.warn(`⚠️ [FRONTEND] لا يوجد كود في الرد.`);
             throw new Error(data.message || "الكود غير متواجد في الاستجابة");
         }
     } catch (err) {
+        console.error(`❌ [FRONTEND] خطأ نهائي في دالة الربط:`, err);
         showToast(`❌ ${err.message}`, false);
-        console.error("Pairing Code Error:", err);
     } finally {
         btn.innerText = "طلب كود الربط 🔑";
         btn.disabled = false;
+        console.log("🏁 [FRONTEND] انتهاء دورة requestPairingCode()");
     }
 }
 
