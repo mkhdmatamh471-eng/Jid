@@ -1,16 +1,16 @@
-# --- المكتبات الأساسية التي أضفتها أنت ---
-fastapi
+Fastapi
 uvicorn
 python-multipart
 sqlalchemy
 psycopg2-binary
-supabase
 httpx
 aiofiles
 jinja2
 python-dotenv
 pydantic
 pycryptodome
-qrcode[pil]  
-Pillow            
+qrcode[pil]
+Pillow
 python-slugify
+requests
+python-dateutil
