@@ -62,9 +62,6 @@ def get_db_connection():
 
 
 # قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
-contexts: Dict[str, any] = {} 
-pages: Dict[str, any] = {}
-browser_instance = None
 # 1. الإعدادات والتحميل
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -285,12 +282,6 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 
-def clear_local_sessions():
-    """مسح المجلدات المؤقتة لتفريغ مساحة القرص في Render"""
-    if os.path.exists(SESSION_PATH):
-        shutil.rmtree(SESSION_PATH)
-        os.makedirs(SESSION_PATH)
-        logger.info("🧹 تم تصفير المجلدات المؤقتة بنجاح!")
 
 # استدعِ الدالة قبل البدء بطلب باركود جديد
 
@@ -403,19 +394,6 @@ async def on_new_message_logic(payload):
         logger.error(f"❌ خطأ عام في دالة on_new_message_logic: {e}")
 
 
-async def block_useless_resources(route):
-    # إزالة "image" من الحظر لكي يظهر الـ QR وتظهر صور المنتجات لاحقاً
-    useless_types = ["media", "font", "manifest"] 
-    
-    if route.request.resource_type in useless_types:
-        await route.abort()
-    else:
-        url = route.request.url
-        # لا تقم بحظر أي شيء يخص whatsapp
-        if "google-analytics" in url or "facebook" in url:
-            await route.abort()
-        else:
-            await route.continue_()
 
 # الاستخدام داخل الكود
 # await page.route("**/*", block_useless_resources)
