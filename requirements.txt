@@ -1,17 +1,31 @@
-Fastapi
-uvicorn
-python-multipart
-sqlalchemy
-psycopg2-binary
-httpx
-aiofiles
-jinja2
-python-dotenv
-pydantic
-supabase
-pycryptodome
-qrcode[pil]
-Pillow
-python-slugify
-requests
-python-dateutil
+# الأساسيات والإطار البرمجي
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# قاعدة البيانات (PostgreSQL & Supabase)
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+supabase==2.3.0
+
+# التعامل مع الطلبات والملفات (Async)
+httpx==0.26.0
+aiofiles==23.2.1
+requests==2.31.0
+
+# القوالب والبيئة
+jinja2==3.1.3
+python-dotenv==1.0.1
+pydantic==2.6.0
+pydantic-settings==2.1.0
+
+# الأمان والتشفير
+pycryptodome==3.20.0
+python-slugify==8.0.4
+
+# معالجة الصور والباركود (مهمة لـ Baileys Direct)
+qrcode[pil]==7.4.2
+Pillow==10.2.0
+
+# التوقيت والتعامل مع التواريخ
+python-dateutil==2.8.2
