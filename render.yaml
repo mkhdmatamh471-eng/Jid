@@ -1,10 +1,21 @@
 services:
   - type: web
     name: salla-ai-bot
-    env: docker # هنا نخبر ريندر باستخدام دوكر
-    plan: free
+    env: docker
+    plan: free # أو starter حسب رغبتك
+    region: frankfurt # اختر المنطقة الأقرب لك
     envVars:
       - key: DATABASE_URL
         sync: false
-      - key: GROK_API_KEY
+      - key: GROQ_API_KEY # تأكد من مطابقة الاسم في الكود (GROQ وليس GROK)
+        sync: false
+      - key: WHATSAPP_URL
+        sync: false # رابط سيرفر ايفولوشن الخاص بك
+      - key: WHATSAPP_API_KEY
+        sync: false # مفتاح الأمان للسيرفر
+      - key: SALLA_CLIENT_ID
+        sync: false
+      - key: SALLA_CLIENT_SECRET
+        sync: false
+      - key: SALLA_WEBHOOK_SECRET
         sync: false
