@@ -5,7 +5,6 @@ python-multipart
 sqlalchemy
 psycopg2-binary
 supabase
-playwright
 httpx
 aiofiles
 jinja2
