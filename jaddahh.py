@@ -1,6 +1,7 @@
 import os
 import hmac
 import hashlib
+import shuti
 import tarfile
 import json
 import qrcode
@@ -1492,40 +1493,53 @@ async def update_config(store_id: str, settings: dict):
 # نفترض أن لديك كلاس لإدارة العمليات (Subprocess)
 # إذا لم يكن لديك، سأضع لك لمحة عنه بالأسفل
 
+l # ضروري جداً لمسح المجلدات
+
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     instance_id = f"{store_id}_main"
-    print(f"\n🔍 [SMART CACHE] فحص طلب الباركود للمتجر: {instance_id}")
-
-    # --- الخطوة 1: فحص قاعدة البيانات المحلية ---
-    conn = sqlite3.connect('local_bot_cache.db')
-    cursor = conn.cursor()
-    # جلب الباركود إذا لم يمر عليه أكثر من دقيقة (لضمان صلاحيته)
-    cursor.execute("SELECT qr_text FROM qr_cache WHERE store_id = ? AND timestamp > datetime('now', '-1 minute')", (store_id,))
-    cached_result = cursor.fetchone()
+    root_dir = os.getcwd()
+    session_dir = os.path.join(root_dir, f"auth_info_{store_id}")
     
-    if cached_result:
-        print("🎯 [DB HIT] تم العثور على باركود صالح في القاعدة المحلية.")
+    print(f"\n{'#'*60}\n🧹 [FORCE RESET] تنظيف شامل للمتجر: {instance_id}")
+
+    # --- 1. كسر حلقة الـ SESSION_CLOSED عبر مسح المجلد تماماً ---
+    try:
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir) # حذف المجلد بكل ما فيه
+            print(f"✅ [CLEAN] تم حذف مجلد الجلسة القديم بنجاح.")
+        os.makedirs(session_dir, exist_ok=True)
+    except Exception as e:
+        print(f"⚠️ [WARN] فشل مسح المجلد (ربما قيد الاستخدام): {e}")
+
+    # --- 2. فحص قاعدة البيانات SQLite أولاً ---
+    try:
+        conn = sqlite3.connect('local_bot_cache.db')
+        cursor = conn.cursor()
+        # جلب كود لم يمر عليه أكثر من 30 ثانية (لأنه حساس جداً في هذه المرحلة)
+        cursor.execute("SELECT qr_text FROM qr_cache WHERE store_id = ? AND timestamp > datetime('now', '-30 seconds')", (store_id,))
+        row = cursor.fetchone()
         conn.close()
-        qr_text = cached_result[0]
-        return {"status": "ready", "qr_code": text_to_base64_qr(qr_text), "instance_name": instance_id}
-    
-    conn.close()
+        if row:
+            print("🎯 [DB HIT] تقديم الباركود المخزن مؤقتاً.")
+            return {"status": "ready", "qr_code": text_to_base64_qr(row[0])}
+    except: pass
 
-    # --- الخطوة 2: إذا لم يوجد كاش، نشغل Node.js ---
+    # --- 3. تشغيل Node.js الآن (سيكون مجبراً على إصدار QR جديد) ---
     try:
         process = await asyncio.create_subprocess_exec(
             'node', 'wa-bridge.js', store_id,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=os.getcwd()
+            cwd=root_dir
         )
 
-        timeout = 20 # رفعنا الوقت قليلاً لبيئة ريندر
         start_time = asyncio.get_event_loop().time()
+        timeout = 25 # وقت كافٍ لـ Render
 
         while True:
             if asyncio.get_event_loop().time() - start_time > timeout:
+                print("❌ [TIMEOUT] Node استغرق وقتاً طويلاً.")
                 break
 
             line = await process.stdout.readline()
@@ -1537,14 +1551,9 @@ async def get_whatsapp_qr(store_id: str):
             if "QR_DATA_START:" in line_str:
                 qr_text = line_str.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
                 
-                # --- الخطوة 3: حفظ الكود الجديد في القاعدة المحلية فوراً ---
-                conn = sqlite3.connect('local_bot_cache.db')
-                cursor = conn.cursor()
-                cursor.execute("INSERT OR REPLACE INTO qr_cache (store_id, qr_text, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", (store_id, qr_text))
-                conn.commit()
-                conn.close()
-                print("💾 [DB SAVE] تم تحديث الباركود في القاعدة المحلية.")
-
+                # حفظ في SQLite للاستخدام السريع في الـ Refresh القادم
+                save_to_sqlite(store_id, qr_text)
+                
                 return {
                     "status": "ready", 
                     "qr_code": text_to_base64_qr(qr_text),
@@ -1552,20 +1561,21 @@ async def get_whatsapp_qr(store_id: str):
                 }
             
             if "SESSION_OPENED" in line_str:
-                return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
+                return {"status": "connected", "message": "الجلسة نشطة بالفعل ✅"}
 
-        return {"status": "processing", "message": "جاري التوليد.. حدث الصفحة."}
+        return {"status": "processing", "message": "حدث الصفحة، جاري التحضير..."}
 
     except Exception as e:
-        print(f"🚨 [ERROR] {str(e)}")
         return {"status": "error", "message": str(e)}
 
-# دالة مساعدة لتحويل النص لصورة Base64
-def text_to_base64_qr(text):
-    qr_img = qrcode.make(text)
-    buffered = BytesIO()
-    qr_img.save(buffered, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+def save_to_sqlite(store_id, qr_text):
+    try:
+        conn = sqlite3.connect('local_bot_cache.db')
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO qr_cache (store_id, qr_text, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", (store_id, qr_text))
+        conn.commit()
+        conn.close()
+    except: pass
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
