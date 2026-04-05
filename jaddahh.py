@@ -5,6 +5,9 @@ import tarfile
 import json
 import qrcode
 import shutil
+import qrcode
+import base64
+from io import BytesIO
 import base64
 from io import BytesIO
 import json
@@ -200,48 +203,6 @@ async def whatsapp_worker():
             message_queue.task_done()
 
 # لا تنسى تشغيل العامل عند بدء تشغيل FastAPI
-@app.on_event("startup")
-async def startup_event():
-    # 1. تشغيل العامل (Worker) المسؤول عن الإرسال
-    asyncio.create_task(whatsapp_worker())
-    
-    # 2. وظيفة ذكية تنتظر الربط قبل إرسال الاختبار
-    async def wait_for_connection_and_test():
-        test_store_id = "1867788552"
-        test_phone = "966566187430"
-        
-        headers = {"apikey": os.getenv("WHATSAPP_API_KEY")}
-        check_url = f"{WHATSAPP_URL}/instance/connectionState/{test_store_id}"
-
-        logger.info(f"⏳ بانتظار ربط المتجر {test_store_id} لإرسال رسالة الاختبار...")
-
-        # محاولة الفحص كل 5 ثوانٍ (حلقة تكرار حتى يتم الربط)
-        async with httpx.AsyncClient(verify=False) as client:
-            while True:
-                try:
-                    response = await client.get(check_url, headers=headers)
-                    data = response.json()
-                    
-                    # التحقق من حالة الاتصال في Evolution API
-                    if response.status_code == 200 and data.get("instance", {}).get("state") == "open":
-                        logger.info(f"✅ تم اكتشاف الربط! جاري إرسال رسالة الترحيب للمتجر {test_store_id}...")
-                        
-                        # إرسال الرسالة إلى الطابور (Queue) ليقوم الـ Worker بمعالجتها
-                        await message_queue.put((
-                            test_store_id, 
-                            test_phone, 
-                            "🚀 تم الربط بنجاح! نظام الرادار الآن نشط وجاهز لاستقبال طلبات عملائك."
-                        ))
-                        break # الخروج من الحلقة بعد نجاح الإرسال
-                        
-                except Exception as e:
-                    logger.error(f"⚠️ خطأ أثناء فحص حالة الربط: {e}")
-                
-                # انتظر 5 ثوانٍ قبل محاولة الفحص التالية
-                await asyncio.sleep(5)
-
-    # تشغيل مهمة المراقبة في الخلفية
-    asyncio.create_task(wait_for_connection_and_test())
 
 # تشغيل العامل عند بدء التطبيق
 
@@ -1468,81 +1429,70 @@ async def update_config(store_id: str, settings: dict):
 # 1. دالة الباركود
 
 # 1. دالة جلب الباركود
+
+
+# نفترض أن لديك كلاس لإدارة العمليات (Subprocess)
+# إذا لم يكن لديك، سأضع لك لمحة عنه بالأسفل
+
 @app.get("/admin/get-qr/{store_id}")
-async def get_whatsapp_qr(store_id: str, session_name: str = "main"):
-    instance_id = f"{store_id}_{session_name}"
-    print(f"\n{'='*50}\n🚀 [BACKEND - QR] بدء طلب باركود للجلسة: {instance_id}\n{'='*50}")
-    
-    # تنظيف الرابط والتأكد من عدم وجود شرطة مائلة في النهاية
-    whatsapp_url = os.getenv("WHATSAPP_URL", "").rstrip("/")
-    api_key = os.getenv("WHATSAPP_API_KEY")
-    headers = {"apikey": api_key, "Content-Type": "application/json"}
-    
-    async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
-        try:
-            # --- الخطوة 1: الفحص ---
-            status_url = f"{whatsapp_url}/instance/connectionState/{instance_id}"
-            print(f"🔍 [1] جاري فحص حالة الجلسة عبر الرابط: {status_url}")
-            status_resp = await client.get(status_url, headers=headers)
-            print(f"📥 [1] استجابة الفحص | الكود: {status_resp.status_code} | النص: {status_resp.text}")
+async def get_whatsapp_qr(store_id: str):
+    instance_id = f"{store_id}_main"
+    print(f"\n{'='*50}\n🚀 [LOCAL - QR] طلب باركود مباشر للمتجر: {instance_id}\n{'='*50}")
+
+    # المسارات المحلية (نفس التي حددناها في Node.js)
+    session_dir = os.path.join(os.getcwd(), f"auth_info_{store_id}")
+    qr_file_path = os.path.join(session_dir, "last_qr.txt")
+    creds_path = os.path.join(session_dir, "creds.json")
+
+    try:
+        # 1. فحص هل الجلسة متصلة أصلاً (وجود ملف creds.json مع بيانات صحيحة)
+        if os.path.exists(creds_path):
+            # هنا يمكنك إضافة فحص إضافي للتأكد من أن العملية (Process) تعمل
+            # لكن مبدئياً، إذا كان الملف موجوداً ولا يوجد باركود، فغالباً العميل متصل
+            if not os.path.exists(qr_file_path):
+                return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
+
+        # 2. إذا لم يكن هناك باركود، تأكد من تشغيل ملف Node.js
+        if not os.path.exists(qr_file_path):
+            print(f"🏗️ [1] تشغيل جسر WhatsApp للمتجر {store_id}...")
+            # تشغيل ملف Node.js كعملية خلفية (Subprocess)
+            # ملاحظة: تأكد من أن الدالة لا تحجب (Non-blocking)
+            process = await asyncio.create_subprocess_exec(
+                'node', 'wa-bridge.js', store_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
             
-            if status_resp.status_code == 200:
-                data = status_resp.json()
-                state = data.get("instance", {}).get("state")
-                print(f"💡 [1] الجلسة موجودة مسبقاً. الحالة الحالية: {state}")
-                if state == "open":
-                    return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
+            # ننتظر قليلاً حتى يقوم Node.js بتوليد الملف
+            print("⏳ ننتظر ثوانٍ لتوليد الباركود محلياً...")
+            await asyncio.sleep(3) 
+
+        # 3. محاولة قراءة الباركود من الملف المحلي
+        if os.path.exists(qr_file_path):
+            with open(qr_file_path, "r") as f:
+                qr_text = f.read().strip()
             
-            # --- الخطوة 2: الإنشاء ---
-            elif status_resp.status_code == 404:
-                print(f"🏗️ [2] الجلسة غير موجودة. جاري محاولة إنشائها...")
-                create_payload = {
-                    "instanceName": instance_id,
-                    "token": api_key,
-                    "qrcode": True,
-                    "integration": "WHATSAPP-BAILEYS"
-                }
-                create_url = f"{whatsapp_url}/instance/create"
-                print(f"📡 [2] إرسال طلب الإنشاء | البيانات المرسلة: {create_payload}")
-                
-                create_resp = await client.post(create_url, json=create_payload, headers=headers)
-                print(f"📥 [2] استجابة الإنشاء | الكود: {create_resp.status_code} | النص: {create_resp.text}")
-                
-                # إيقاف العملية إذا رفض السيرفر الإنشاء (مثل خطأ 400)
-                if create_resp.status_code not in [200, 201]:
-                    return {"status": "error", "message": f"رفض السيرفر إنشاء الجلسة (الخطأ {create_resp.status_code}): {create_resp.text}"}
-                
-                print("⏳ [2] الإنشاء ناجح. ننتظر 5 ثوانٍ لتهيئة الملفات داخل Evolution API...")
-                await asyncio.sleep(5.0) 
-            else:
-                print(f"⚠️ [1] استجابة غير متوقعة عند الفحص: {status_resp.status_code}")
-
-            # --- الخطوة 3: الربط (جلب الباركود) ---
-            connect_url = f"{whatsapp_url}/instance/connect/{instance_id}"
-            print(f"🔄 [3] جاري طلب الباركود عبر الرابط: {connect_url}")
-            connect_resp = await client.get(connect_url, headers=headers)
-            print(f"📥 [3] استجابة الباركود | الكود: {connect_resp.status_code}")
+            # تحويل نص الباركود إلى صورة Base64 فوراً
+            qr_img = qrcode.make(qr_text)
+            buffered = BytesIO()
+            qr_img.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode()
             
-            if connect_resp.status_code == 200:
-                data = connect_resp.json()
-                qr_base64 = data.get("base64") or data.get("qrcode", {}).get("base64")
-                if qr_base64:
-                    if not qr_base64.startswith("data:image"):
-                        qr_base64 = f"data:image/png;base64,{qr_base64}"
-                    print("✅ [3] تم تجهيز الباركود بنجاح!")
-                    return {"status": "ready", "qr_code": qr_base64, "instance_name": instance_id}
-                
-                print("⚠️ [3] السيرفر استجاب 200 لكن لم يرسل Base64.")
-            else:
-                print(f"❌ [3] فشل طلب الباركود | النص: {connect_resp.text}")
+            print(f"✅ [SUCCESS] تم توليد الباركود محلياً بسرعة البرق!")
+            return {
+                "status": "ready", 
+                "qr_code": f"data:image/png;base64,{img_str}",
+                "instance_name": instance_id
+            }
+        
+        return {
+            "status": "processing", 
+            "message": "جاري تشغيل الجلسة.. يرجى تحديث الصفحة بعد قليل."
+        }
 
-            return {"status": "processing", "message": "جاري تجهيز الباركود، انتظر ثوانٍ وجرب التحديث."}
-
-        except Exception as e:
-            print(f"🚨 [خطأ استثنائي] {str(e)}")
-            return {"status": "error", "message": f"خطأ في النظام: {str(e)}"}
-
-
+    except Exception as e:
+        print(f"🚨 [خطأ] {str(e)}")
+        return {"status": "error", "message": f"حدث خطأ في النظام المحلي: {str(e)}"}
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
@@ -1732,17 +1682,30 @@ async def test_ai(store_id: str, data: dict):
         logger.error(f"Test AI Error: {str(e)}")
         return {"reply": f"خطأ في النظام: {str(e)}"}
 
-    
+
+# ... (بقية الكود الخاص بك) ...
+
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
-    with open("index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    # التأكد من وجود الملف قبل محاولة فتحه لتجنب انهيار السيرفر
+    file_path = "index.html"
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    else:
+        logger.error("❌ ملف index.html غير موجود في الجذر!")
+        return HTMLResponse(content="<h1>خطأ: ملف واجهة المستخدم مفقود</h1>", status_code=404)
 
-# 2. هذا المسار سيبقى لفحص الحالة (يمكنك الوصول إليه عبر /health)
 @app.get("/health")
 def health_check():
     return {
         "status": "online", 
         "engine": "PostgreSQL (Internal)",
-        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "storage_check": os.path.exists("whatsapp_sessions") # التأكد من وجود مجلد الجلسات
     }
+
+# إفادة Render بالمنفذ الصحيح (Port)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
