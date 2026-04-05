@@ -315,6 +315,10 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 def monitor_output(process, store_id):
+    for line in iter(process.stdout.readline, ''):
+        print(f"DEBUG NODE: {line.strip()}") # أضف هذا السطر لمشاهدة الخطأ
+        # ... بقية الكود
+
     """
     مراقب مخرجات عملية Node.js:
     يقوم بالتقاط الباركود، حالة الاتصال، والرسائل الواردة وتمريرها للمعالجة.
