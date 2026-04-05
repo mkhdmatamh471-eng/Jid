@@ -315,14 +315,58 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 def monitor_output(process, store_id):
+    """
+    مراقب مخرجات عملية Node.js:
+    يقوم بالتقاط الباركود، حالة الاتصال، والرسائل الواردة وتمريرها للمعالجة.
+    """
+    # قراءة المخرجات سطر بسطر من عملية الجسر (wa-bridge.js)
     for line in iter(process.stdout.readline, ''):
+        line = line.strip()
+        if not line:
+            continue
+
+        # 1. حالة استلام باركود جديد
         if "QR_DATA_START:" in line:
-            # استخراج الكود من بين العلامات
-            qr_code = line.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
-            latest_qrs[store_id] = qr_code
-            print(f"✅ New QR Received for Store {store_id}")
+            try:
+                qr_code = line.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
+                latest_qrs[store_id] = qr_code
+                logger.info(f"✨ [QR] New code generated for Store: {store_id}")
+            except Exception as e:
+                logger.error(f"❌ Error parsing QR: {e}")
+
+        # 2. حالة نجاح فتح الجلسة (سواء لأول مرة أو استعادة من القاعدة)
         elif "SESSION_OPENED" in line:
             latest_qrs[store_id] = "CONNECTED"
+            logger.info(f"✅ [AUTH] Store {store_id} is now ONLINE (Postgres Session)")
+
+        # 3. حالة استلام رسالة جديدة من عميل (التمرير للذكاء الاصطناعي)
+        elif "NEW_MSG|" in line:
+            try:
+                # التنسيق المتوقع من wa-bridge.js هو: NEW_MSG|sender_phone|message_text
+                parts = line.split("|")
+                if len(parts) >= 3:
+                    sender_phone = parts[1]
+                    message_text = "|".join(parts[2:]) # لضمان عدم ضياع النص لو احتوى على |
+                    
+                    logger.info(f"📩 [INCOMING] From {sender_phone} @ {store_id}: {message_text}")
+                    
+                    # تمرير الرسالة لمعالج الذكاء الاصطناعي في الخلفية
+                    # نستخدم run_coroutine_threadsafe لأن هذه الدالة تعمل في Thread مستقل
+                    asyncio.run_coroutine_threadsafe(
+                        process_customer_request(store_id, sender_phone, message_text),
+                        asyncio.get_event_loop()
+                    )
+            except Exception as e:
+                logger.error(f"❌ Error routing incoming message: {e}")
+
+        # 4. تأكيد إرسال رسالة (Outbound Confirmation)
+        elif "SENT_CONFIRMATION:" in line:
+            recipient = line.split("SENT_CONFIRMATION:")[1]
+            logger.info(f"📤 [SENT] Message delivered to {recipient} via Store {store_id}")
+
+        # 5. تسجيل أخطاء Node.js العامة
+        elif "CRITICAL_NODE_ERROR" in line:
+            logger.error(f"🚨 [NODE CRITICAL] {line}")
 
 # تحديد مسار حفظ بيانات الجلسة (سيتم إنشاء مجلد في نفس مسار السكربت)
 
