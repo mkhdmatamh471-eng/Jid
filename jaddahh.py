@@ -114,38 +114,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 
-def init_db():
-    conn = sqlite3.connect('whatsapp_sessions.db')
-    cursor = conn.cursor()
-    # جدول لتخزين الباركود والجلسة
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            store_id TEXT PRIMARY KEY,
-            qr_code TEXT,
-            creds_json TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+import sqlite3
 
-def save_qr_to_db(store_id, qr_text):
-    conn = sqlite3.connect('whatsapp_sessions.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO sessions (store_id, qr_code) 
-        VALUES (?, ?) 
-        ON CONFLICT(store_id) DO UPDATE SET qr_code = EXCLUDED.qr_code
-    ''', (store_id, qr_text))
-    conn.commit()
-    conn.close()
-
-
-
-# إنشاء قاعدة البيانات والجدول إذا لم يكن موجوداً
+# دالة التهيئة الموحدة
 def init_local_db():
-    conn = sqlite3.connect('local_bot_cache.db')
+    conn = sqlite3.connect('local_bot_cache.db', timeout=10)
     cursor = conn.cursor()
+    # جدول الباركود (مؤقت)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS qr_cache (
             store_id TEXT PRIMARY KEY,
@@ -153,19 +128,49 @@ def init_local_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # جدول الجلسات (الدائم نسبياً)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            store_id TEXT PRIMARY KEY,
+            creds_json TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
-init_local_db()
-
+# دالة جلب الباركود المحدثة (للتوافق مع دالة get_whatsapp_qr)
 def get_qr_from_db(store_id):
-    conn = sqlite3.connect('whatsapp_sessions.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT qr_code FROM sessions WHERE store_id = ?', (store_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
+    try:
+        conn = sqlite3.connect('local_bot_cache.db')
+        cursor = conn.cursor()
+        # جلب الباركود بشرط ألا يكون قديماً (أقل من 30 ثانية)
+        cursor.execute('''
+            SELECT qr_text FROM qr_cache 
+            WHERE store_id = ? AND timestamp > datetime('now', '-30 seconds')
+        ''', (store_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
+    except:
+        return None
 
+# دالة حفظ الباركود
+def save_qr_to_db(store_id, qr_text):
+    try:
+        conn = sqlite3.connect('local_bot_cache.db', timeout=10)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO qr_cache (store_id, qr_text, timestamp) 
+            VALUES (?, ?, CURRENT_TIMESTAMP) 
+            ON CONFLICT(store_id) DO UPDATE SET 
+                qr_text = EXCLUDED.qr_text,
+                timestamp = CURRENT_TIMESTAMP
+        ''', (store_id, qr_text))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error saving QR: {e}")
 
 class BaileysDirectHandler:
     def __init__(self, store_id: str):
@@ -1494,37 +1499,49 @@ async def update_config(store_id: str, settings: dict):
 # إذا لم يكن لديك، سأضع لك لمحة عنه بالأسفل
 
 
+
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     instance_id = f"{store_id}_main"
     root_dir = os.getcwd()
-    session_dir = os.path.join(root_dir, f"auth_info_{store_id}")
+    db_path = 'local_bot_cache.db'
     
-    print(f"\n{'#'*60}\n🧹 [FORCE RESET] تنظيف شامل للمتجر: {instance_id}")
+    print(f"\n{'='*40}\n📱 [SQLITE-ONLY] طلب باركود للمتجر: {store_id}")
 
-    # --- 1. كسر حلقة الـ SESSION_CLOSED عبر مسح المجلد تماماً ---
+    # --- 1. التحقق من وجود باركود "طازج" في SQLite ---
     try:
-        if os.path.exists(session_dir):
-            shutil.rmtree(session_dir) # حذف المجلد بكل ما فيه
-            print(f"✅ [CLEAN] تم حذف مجلد الجلسة القديم بنجاح.")
-        os.makedirs(session_dir, exist_ok=True)
+        with sqlite3.connect(db_path, timeout=15) as conn:
+            cursor = conn.cursor()
+            # نبحث عن باركود لم يتجاوز عمره 40 ثانية
+            cursor.execute("""
+                SELECT qr_text FROM qr_cache 
+                WHERE store_id = ? AND timestamp > datetime('now', '-40 seconds')
+            """, (store_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                print("🎯 [DB HIT] تقديم الباركود من SQLite مباشرة.")
+                return {
+                    "status": "ready", 
+                    "qr_code": text_to_base64_qr(row[0]),
+                    "source": "cache"
+                }
     except Exception as e:
-        print(f"⚠️ [WARN] فشل مسح المجلد (ربما قيد الاستخدام): {e}")
+        print(f"⚠️ [DB READ ERROR]: {e}")
 
-    # --- 2. فحص قاعدة البيانات SQLite أولاً ---
+    # --- 2. إذا لم يوجد كاش: تنظيف المجلد القديم وتشغيل Node ---
+    session_dir = os.path.join(root_dir, f"auth_info_{store_id}")
     try:
-        conn = sqlite3.connect('local_bot_cache.db')
-        cursor = conn.cursor()
-        # جلب كود لم يمر عليه أكثر من 30 ثانية (لأنه حساس جداً في هذه المرحلة)
-        cursor.execute("SELECT qr_text FROM qr_cache WHERE store_id = ? AND timestamp > datetime('now', '-30 seconds')", (store_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            print("🎯 [DB HIT] تقديم الباركود المخزن مؤقتاً.")
-            return {"status": "ready", "qr_code": text_to_base64_qr(row[0])}
+        # قتل أي عملية Node قديمة لهذا المتجر لضمان عدم قفل الملفات
+        os.system(f"pkill -f 'node wa-bridge.js {store_id}'")
+        
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir, ignore_errors=True)
+        os.makedirs(session_dir, exist_ok=True)
     except: pass
 
-    # --- 3. تشغيل Node.js الآن (سيكون مجبراً على إصدار QR جديد) ---
+    # --- 3. تشغيل Node.js للحصول على باركود جديد وحفظه ---
+    process = None
     try:
         process = await asyncio.create_subprocess_exec(
             'node', 'wa-bridge.js', store_id,
@@ -1534,11 +1551,11 @@ async def get_whatsapp_qr(store_id: str):
         )
 
         start_time = asyncio.get_event_loop().time()
-        timeout = 25 # وقت كافٍ لـ Render
+        timeout = 25 
 
         while True:
             if asyncio.get_event_loop().time() - start_time > timeout:
-                print("❌ [TIMEOUT] Node استغرق وقتاً طويلاً.")
+                if process: process.terminate()
                 break
 
             line = await process.stdout.readline()
@@ -1550,31 +1567,39 @@ async def get_whatsapp_qr(store_id: str):
             if "QR_DATA_START:" in line_str:
                 qr_text = line_str.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
                 
-                # حفظ في SQLite للاستخدام السريع في الـ Refresh القادم
+                # تحديث SQLite فوراً
                 save_to_sqlite(store_id, qr_text)
+                
+                # نترك العملية تعمل قليلاً ثم نقتلها لتوفير موارد Render
+                if process: process.terminate() 
                 
                 return {
                     "status": "ready", 
                     "qr_code": text_to_base64_qr(qr_text),
-                    "instance_name": instance_id
+                    "source": "new_generated"
                 }
             
             if "SESSION_OPENED" in line_str:
+                if process: process.terminate()
                 return {"status": "connected", "message": "الجلسة نشطة بالفعل ✅"}
 
-        return {"status": "processing", "message": "حدث الصفحة، جاري التحضير..."}
-
     except Exception as e:
+        if process: process.terminate()
         return {"status": "error", "message": str(e)}
+
+    return {"status": "processing", "message": "جاري التحضير.. أعد المحاولة خلال ثوانٍ."}
 
 def save_to_sqlite(store_id, qr_text):
     try:
-        conn = sqlite3.connect('local_bot_cache.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO qr_cache (store_id, qr_text, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", (store_id, qr_text))
-        conn.commit()
-        conn.close()
-    except: pass
+        with sqlite3.connect('local_bot_cache.db', timeout=20) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO qr_cache (store_id, qr_text, timestamp) 
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            """, (store_id, qr_text))
+            conn.commit()
+            print(f"💾 [SQLITE] تم تحديث الكاش للمتجر {store_id}")
+    except Exception as e:
+        print(f"❌ [SQLITE SAVE ERROR]: {e}")
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
