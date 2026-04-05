@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
@@ -7,16 +8,78 @@ const {
 const pino = require("pino");
 const fs = require('fs');
 const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
 
+// --- إعدادات Supabase ---
+// تأكد من إضافة هذه المتغيرات في بيئة Render (Environment Variables)
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// --- دوال المزامنة مع قاعدة البيانات ---
+async function syncSessionToSupabase(storeId, sessionDir) {
+    try {
+        if (!fs.existsSync(sessionDir)) return;
+        
+        const files = fs.readdirSync(sessionDir);
+        const sessionData = {};
+        
+        for (const file of files) {
+            // نقوم بقراءة ملفات الجلسة (JSON فقط) لتخزينها
+            if (file.endsWith('.json')) {
+                const filePath = path.join(sessionDir, file);
+                const fileContent = fs.readFileSync(filePath, 'utf-8');
+                sessionData[file] = JSON.parse(fileContent);
+            }
+        }
+        
+        // رفع البيانات ككائن JSON واحد إلى عمود session_data
+        const { error } = await supabase
+            .from('stores') // استبدل 'stores' باسم جدولك الفعلي
+            .upsert({ store_id: storeId, session_data: sessionData });
+            
+        if (error) throw error;
+        // console.log(`☁️ [SYNC] Session synced to Supabase for Store: ${storeId}`);
+    } catch (error) {
+        console.error(`❌ [SYNC_ERROR] ${error.message}`);
+    }
+}
+
+async function restoreSessionFromSupabase(storeId, sessionDir) {
+    try {
+        const { data, error } = await supabase
+            .from('stores') // استبدل 'stores' باسم جدولك الفعلي
+            .select('session_data')
+            .eq('store_id', storeId)
+            .single();
+
+        if (error && error.code !== 'PGRST116') { // تجاهل خطأ "عدم وجود سجل"
+            throw error;
+        }
+
+        if (data && data.session_data) {
+            if (!fs.existsSync(sessionDir)) {
+                fs.mkdirSync(sessionDir, { recursive: true });
+            }
+            // إعادة بناء الملفات في مجلد /tmp
+            for (const [filename, content] of Object.entries(data.session_data)) {
+                fs.writeFileSync(path.join(sessionDir, filename), JSON.stringify(content, null, 2));
+            }
+            console.log(`📥 [RESTORE] Session restored from Supabase for Store: ${storeId}`);
+        }
+    } catch (error) {
+         console.error(`❌ [RESTORE_ERROR] ${error.message}`);
+    }
+}
+
+// --- الدالة الأساسية لتشغيل واتساب ---
 async function startWhatsApp(storeId) {
-    // 1. استخدام مسار مطلق متوافق مع بايثون
-    const rootDir = process.cwd(); 
-    const sessionDir = path.join(rootDir, `auth_info_${storeId}`);
+    // 1. استخدام مسار /tmp لأنه مسموح الكتابة فيه في بيئات الخوادم السحابية مثل Render
+    const sessionDir = path.join('/tmp', `auth_info_${storeId}`);
     const qrFilePath = path.join(sessionDir, 'last_qr.txt');
 
-    if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-    }
+    // 2. محاولة استرجاع الجلسة السابقة من قاعدة البيانات قبل التشغيل
+    await restoreSessionFromSupabase(storeId, sessionDir);
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version } = await fetchLatestBaileysVersion();
@@ -26,30 +89,28 @@ async function startWhatsApp(storeId) {
         auth: state,
         printQRInTerminal: false, 
         logger: pino({ level: "silent" }),
-        browser: ["Jaddah Bot", "Chrome", "1.0.0"],
+        browser: ["Ubuntu", "Chrome", "20.0.04"], // تغيير لتقليل الحظر
         syncFullHistory: false 
     });
 
-    sock.ev.on("creds.update", saveCreds);
+    // 3. عند تحديث الاعتمادات، احفظها محلياً وارفعها إلى Supabase
+    sock.ev.on("creds.update", async () => {
+        await saveCreds();
+        await syncSessionToSupabase(storeId, sessionDir);
+    });
 
-    sock.ev.on("connection.update", (update) => {
+    sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // --- نظام التمرير المباشر للبصمة (QR) ---
         if (qr) {
-            // نطبع الكود بعلامات محددة ليلتقطها كود بايثون من الـ stdout فوراً
             console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
-            
-            // احتياطاً نكتب الملف أيضاً
-            try {
-                fs.writeFileSync(qrFilePath, qr, { flush: true });
-            } catch (err) {}
+            try { fs.writeFileSync(qrFilePath, qr, { flush: true }); } catch (err) {}
         }
 
         if (connection === "close") {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            
+
             console.log(`SESSION_CLOSED:${storeId}:RECONNECT:${shouldReconnect}`);
 
             if (fs.existsSync(qrFilePath)) {
@@ -58,11 +119,17 @@ async function startWhatsApp(storeId) {
 
             if (shouldReconnect) {
                 startWhatsApp(storeId);
+            } else {
+                // إذا قام المستخدم بتسجيل الخروج من هاتفه، امسح الجلسة محلياً ومن قاعدة البيانات
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+                await supabase.from('stores').update({ session_data: null }).eq('store_id', storeId);
+                console.log(`🗑️ [CLEANUP] Session deleted for Store: ${storeId}`);
             }
         } else if (connection === "open") {
-            // علامة النجاح ليعرف بايثون أن الربط تم
             console.log(`SESSION_OPENED:${storeId}`);
-            
+            // رفع نهائي بعد فتح الاتصال لضمان حفظ كل المفاتيح
+            await syncSessionToSupabase(storeId, sessionDir);
+
             if (fs.existsSync(qrFilePath)) {
                 setTimeout(() => {
                     try { fs.unlinkSync(qrFilePath); } catch(e) {}
@@ -71,7 +138,6 @@ async function startWhatsApp(storeId) {
         }
     });
 
-    // استقبال أوامر الإرسال من Python عبر stdin
     process.stdin.on("data", async (data) => {
         try {
             const str = data.toString().trim();
