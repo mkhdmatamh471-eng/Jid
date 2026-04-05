@@ -34,6 +34,8 @@ from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timedelta
 import logging
 import subprocess
+import sqlite3
+import json
 import urllib.parse
 from fastapi import APIRouter
 
@@ -110,6 +112,60 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # --- قسم Baileys الجديد ---
 
 
+
+def init_db():
+    conn = sqlite3.connect('whatsapp_sessions.db')
+    cursor = conn.cursor()
+    # جدول لتخزين الباركود والجلسة
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            store_id TEXT PRIMARY KEY,
+            qr_code TEXT,
+            creds_json TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_qr_to_db(store_id, qr_text):
+    conn = sqlite3.connect('whatsapp_sessions.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO sessions (store_id, qr_code) 
+        VALUES (?, ?) 
+        ON CONFLICT(store_id) DO UPDATE SET qr_code = EXCLUDED.qr_code
+    ''', (store_id, qr_text))
+    conn.commit()
+    conn.close()
+
+
+
+# إنشاء قاعدة البيانات والجدول إذا لم يكن موجوداً
+def init_local_db():
+    conn = sqlite3.connect('local_bot_cache.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS qr_cache (
+            store_id TEXT PRIMARY KEY,
+            qr_text TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_local_db()
+
+def get_qr_from_db(store_id):
+    conn = sqlite3.connect('whatsapp_sessions.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT qr_code FROM sessions WHERE store_id = ?', (store_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+
 class BaileysDirectHandler:
     def __init__(self, store_id: str):
         self.store_id = store_id
@@ -142,6 +198,7 @@ class BaileysDirectHandler:
             # إذا لم تكن الجلسة تعمل، نشغلها ونحاول الإرسال
             await self.start_session()
             return False
+
 
 # استبدل الـ Handler القديم في كودك بهذا
 async def get_handler_for_store(store_id: str):
@@ -1438,10 +1495,25 @@ async def update_config(store_id: str, settings: dict):
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     instance_id = f"{store_id}_main"
-    print(f"\n{'#'*60}\n🔍 [PIPE MODE] بدء مراقبة مخرجات Node للمتجر: {instance_id}")
+    print(f"\n🔍 [SMART CACHE] فحص طلب الباركود للمتجر: {instance_id}")
 
+    # --- الخطوة 1: فحص قاعدة البيانات المحلية ---
+    conn = sqlite3.connect('local_bot_cache.db')
+    cursor = conn.cursor()
+    # جلب الباركود إذا لم يمر عليه أكثر من دقيقة (لضمان صلاحيته)
+    cursor.execute("SELECT qr_text FROM qr_cache WHERE store_id = ? AND timestamp > datetime('now', '-1 minute')", (store_id,))
+    cached_result = cursor.fetchone()
+    
+    if cached_result:
+        print("🎯 [DB HIT] تم العثور على باركود صالح في القاعدة المحلية.")
+        conn.close()
+        qr_text = cached_result[0]
+        return {"status": "ready", "qr_code": text_to_base64_qr(qr_text), "instance_name": instance_id}
+    
+    conn.close()
+
+    # --- الخطوة 2: إذا لم يوجد كاش، نشغل Node.js ---
     try:
-        # تشغيل الجسر والتقاط المخرجات والخطأ
         process = await asyncio.create_subprocess_exec(
             'node', 'wa-bridge.js', store_id,
             stdout=asyncio.subprocess.PIPE,
@@ -1449,56 +1521,51 @@ async def get_whatsapp_qr(store_id: str):
             cwd=os.getcwd()
         )
 
-        print(f"⏳ [WAIT] ننتظر صدور الباركود من الذاكرة مباشرة...")
-
-        # قراءة المخرجات سطر بسطر (لمدة أقصاها 15 ثانية مثلاً)
-        timeout = 15 
+        timeout = 20 # رفعنا الوقت قليلاً لبيئة ريندر
         start_time = asyncio.get_event_loop().time()
 
         while True:
-            # فحص الوقت لمنع التعليق
             if asyncio.get_event_loop().time() - start_time > timeout:
-                print("❌ [TIMEOUT] استغرق Node وقتاً طويلاً ولم يرسل باركود.")
                 break
 
-            # قراءة سطر واحد من مخرجات Node
             line = await process.stdout.readline()
-            if not line:
-                break
+            if not line: break
             
             line_str = line.decode().strip()
-            print(f"📦 [NODE LOG]: {line_str}") # ستظهر في سجلات Render للتتبع
+            print(f"📦 [NODE]: {line_str}")
 
-            # البحث عن علامة الباركود التي سنضعها في كود JS
             if "QR_DATA_START:" in line_str:
                 qr_text = line_str.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
                 
-                print(f"🎯 [SUCCESS] تم التقاط الباركود من الذاكرة!")
-                
-                # تحويل النص إلى صورة Base64
-                qr_img = qrcode.make(qr_text)
-                buffered = BytesIO()
-                qr_img.save(buffered, format="PNG")
-                img_str = base64.b64encode(buffered.getvalue()).decode()
-                
+                # --- الخطوة 3: حفظ الكود الجديد في القاعدة المحلية فوراً ---
+                conn = sqlite3.connect('local_bot_cache.db')
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR REPLACE INTO qr_cache (store_id, qr_text, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", (store_id, qr_text))
+                conn.commit()
+                conn.close()
+                print("💾 [DB SAVE] تم تحديث الباركود في القاعدة المحلية.")
+
                 return {
                     "status": "ready", 
-                    "qr_code": f"data:image/png;base64,{img_str}",
+                    "qr_code": text_to_base64_qr(qr_text),
                     "instance_name": instance_id
                 }
             
-            # إذا طبع Node أن الجلسة مفتوحة أصلاً
             if "SESSION_OPENED" in line_str:
                 return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
 
-        return {
-            "status": "processing", 
-            "message": "جاري التوليد.. حدث الصفحة خلال ثوانٍ."
-        }
+        return {"status": "processing", "message": "جاري التوليد.. حدث الصفحة."}
 
     except Exception as e:
         print(f"🚨 [ERROR] {str(e)}")
         return {"status": "error", "message": str(e)}
+
+# دالة مساعدة لتحويل النص لصورة Base64
+def text_to_base64_qr(text):
+    qr_img = qrcode.make(text)
+    buffered = BytesIO()
+    qr_img.save(buffered, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
