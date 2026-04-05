@@ -1,17 +1,16 @@
-# استخدام صورة بايثون نحيفة
 FROM python:3.10-slim
 
-# إعدادات البيئة
+# إعدادات البيئة لتقليل استهلاك الذاكرة وتسريع التشغيل
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
+ENV NODE_ENV production
 
-# تثبيت Node.js والتبعيات اللازمة للبناء
+# تثبيت الأدوات اللازمة لبناء مكتبات Node (مهم جداً لـ pg و baileys)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     build-essential \
     libpq-dev \
-    python3 \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
@@ -19,23 +18,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# نسخ ملفات التبعيات أولاً
+# نسخ ملفات التبعيات
 COPY package.json ./
-# إذا كان لديك ملف package-lock.json انسخه أيضاً لضمان استقرار النسخ
+# إذا كان لديك package-lock.json انسخه أيضاً، إن لم يوجد سيتخطاه الأمر
 COPY package-lock.json* ./
 
-# محاولة التثبيت مع زيادة المهلة الزمنية وتجاهل الـ Scripts غير الضرورية
-# واستخدام --no-audit لتوفير الذاكرة في Render
-RUN npm install --production --no-audit --fund false || \
-    (sleep 5 && npm install --production --no-audit --fund false)
+# تثبيت مكتبات Node مع بارامترات لتقليل الضغط على السيرفر
+# --no-audit و --no-fund يقللان من استهلاك الذاكرة أثناء البناء في Render
+RUN npm install --production --no-audit --no-fund --loglevel=error
 
 # تثبيت مكتبات بايثون
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ بقية الملفات
+# نسخ كود المشروع
 COPY . .
 
+# المنفذ الافتراضي لـ Render
 EXPOSE 10000
 
 CMD ["python", "jaddahh.py"]
