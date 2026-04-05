@@ -1493,7 +1493,6 @@ async def update_config(store_id: str, settings: dict):
 # نفترض أن لديك كلاس لإدارة العمليات (Subprocess)
 # إذا لم يكن لديك، سأضع لك لمحة عنه بالأسفل
 
-l # ضروري جداً لمسح المجلدات
 
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
