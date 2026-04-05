@@ -13,12 +13,9 @@ const { Client } = require('pg');
 const storeId = process.argv[2];
 const dbUrl = process.env.DATABASE_URL;
 
-if (!storeId || !dbUrl) {
-    console.error("❌ Missing StoreID or DATABASE_URL");
-    process.exit(1);
-}
+// رقم الهاتف الذي زودتني به (بدون علامة +)
+const phoneNumber = "967785022014"; 
 
-// 1. إعداد اتصال القاعدة (خارج الدالة لمنع تكرار الاتصال)
 const db = new Client({
     connectionString: dbUrl,
     ssl: { rejectUnauthorized: false }
@@ -26,7 +23,6 @@ const db = new Client({
 
 let isDbConnected = false;
 
-// --- وظيفة رفع الجلسة للقاعدة ---
 async function syncToDB(storeId, sessionDir) {
     try {
         if (!fs.existsSync(sessionDir)) return;
@@ -35,7 +31,6 @@ async function syncToDB(storeId, sessionDir) {
         files.forEach(f => {
             sessionData[f] = JSON.parse(fs.readFileSync(path.join(sessionDir, f)));
         });
-
         await db.query(`
             INSERT INTO whatsapp_sessions (store_id, session_data, last_connected) 
             VALUES ($1, $2, NOW()) 
@@ -45,7 +40,6 @@ async function syncToDB(storeId, sessionDir) {
     } catch (e) { console.error("❌ Sync Error:", e.message); }
 }
 
-// --- وظيفة استعادة الجلسة من القاعدة ---
 async function restoreFromDB(storeId, sessionDir) {
     try {
         const res = await db.query('SELECT session_data FROM whatsapp_sessions WHERE store_id = $1', [storeId]);
@@ -56,23 +50,22 @@ async function restoreFromDB(storeId, sessionDir) {
                 fs.writeFileSync(path.join(sessionDir, file), JSON.stringify(content));
             }
             console.log(`📥 SESSION_RESTORED_FROM_DB:${storeId}`);
+            return true;
         }
     } catch (e) { console.error("❌ Restore Error:", e.message); }
+    return false;
 }
 
-// 2. الدالة الأساسية (نفس منطق التيرمكس الناجح)
 async function startWhatsApp() {
     try {
-        // منع تكرار الاتصال بالقاعدة (حل مشكلة Client has already been connected)
         if (!isDbConnected) {
             await db.connect();
             isDbConnected = true;
-            console.log(`🚀 [BRIDGE] Connected to DB for Store: ${storeId}`);
+            console.log(`🚀 [BRIDGE] Starting for Store: ${storeId}`);
         }
 
-        // تحديد مسار الجلسة (استخدام /tmp لـ Render)
         const sessionDir = path.join('/tmp', `auth_${storeId}`);
-        await restoreFromDB(storeId, sessionDir);
+        const hasSession = await restoreFromDB(storeId, sessionDir);
 
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const { version } = await fetchLatestBaileysVersion();
@@ -82,64 +75,45 @@ async function startWhatsApp() {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: "silent" }),
-            // هوية متصفح قوية لتجنب الـ undefined والـ 405 في السيرفرات
-            browser: ["Mac OS", "Chrome", "110.0.5481.177"],
-            connectTimeoutMs: 60000,
-            keepAliveIntervalMs: 15000
+            browser: ["Ubuntu", "Chrome", "20.0.04"]
         });
 
-        // مزامنة التغييرات فوراً
+        // طلب كود الربط إذا لم تكن هناك جلسة سابقة
+        if (!sock.authState.creds.registered && !hasSession) {
+            console.log(`⏳ جاري طلب كود الربط للرقم: ${phoneNumber}...`);
+            setTimeout(async () => {
+                try {
+                    const code = await sock.requestPairingCode(phoneNumber);
+                    console.log(`\n************************************`);
+                    console.log(`🔑 YOUR PAIRING CODE: ${code}`);
+                    console.log(`************************************\n`);
+                } catch (err) {
+                    console.error("❌ خطأ في طلب الكود:", err.message);
+                }
+            }, 10000); // تأخير 10 ثوانٍ لضمان استقرار الاتصال
+        }
+
         sock.ev.on("creds.update", async () => {
             await saveCreds();
             await syncToDB(storeId, sessionDir);
         });
 
         sock.ev.on("connection.update", async (update) => {
-            const { connection, qr, lastDisconnect } = update;
-
-            if (qr) console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
-
+            const { connection, lastDisconnect } = update;
             if (connection === "open") {
-                console.log(`SESSION_OPENED:${storeId}`);
+                console.log(`✅ SESSION_OPENED:${storeId}`);
                 await syncToDB(storeId, sessionDir);
             }
-
             if (connection === "close") {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                
-                console.log(`📡 Closed. Reason: ${statusCode}. Reconnecting: ${shouldReconnect}`);
-
-                if (shouldReconnect) {
-                    // حل مشكلة الـ 405: الانتظار 5 ثوانٍ قبل إعادة التشغيل
+                if (statusCode !== DisconnectReason.loggedOut) {
                     setTimeout(() => startWhatsApp(), 5000);
-                } else {
-                    await db.query('DELETE FROM whatsapp_sessions WHERE store_id = $1', [storeId]);
-                    if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-                    console.log(`🗑️ SESSION_DELETED:${storeId}`);
                 }
             }
-        });
-
-        // 3. استقبال أوامر الإرسال من بايثون
-        process.stdin.on("data", async (data) => {
-            try {
-                const str = data.toString().trim();
-                if (str.startsWith("SEND:")) {
-                    const parts = str.replace("SEND:", "").split("|");
-                    if (parts.length < 2) return;
-                    const phone = parts[0].replace(/\D/g, '');
-                    const message = parts.slice(1).join("|");
-                    const jid = `${phone}@s.whatsapp.net`;
-                    await sock.sendMessage(jid, { text: message });
-                    console.log(`[SUCCESS_SEND] To: ${jid}`);
-                }
-            } catch (err) { console.error(`[SEND_ERROR] ${err.message}`); }
         });
 
     } catch (err) {
-        console.error("❌ CRITICAL_NODE_ERROR:", err.message);
-        // في حال حدوث خطأ فادح، حاول إعادة التشغيل بعد 5 ثوانٍ
+        console.error("❌ Node Error:", err.message);
         setTimeout(() => startWhatsApp(), 5000);
     }
 }
