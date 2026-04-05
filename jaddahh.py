@@ -1789,6 +1789,15 @@ async def test_ai(store_id: str, data: dict):
         logger.error(f"Test AI Error: {str(e)}")
         return {"reply": f"خطأ في النظام: {str(e)}"}
 
+@app.on_event("startup")
+async def startup_event():
+    # --- أضف هذا السطر هنا ---
+    init_local_db() 
+    
+    # بقية المهام الخلفية
+    asyncio.create_task(message_worker())
+    asyncio.create_task(cron_scheduler())
+    logger.info("🚀 تم تشغيل الخدمات وتهيئة قاعدة البيانات المحلية.")
 
 # ... (بقية الكود الخاص بك) ...
 
