@@ -368,37 +368,48 @@ function switchLinkMode(mode) {
 }
 
 // توليد QR Code
-// 1. دالة تحديث الباركود
 async function refreshQR() {
-    console.log("🟢 [FRONTEND] بدء طلب refreshQR()");
+    console.log("🟢 [FRONTEND] بدء طلب توليد الباركود...");
     const qrImage = document.getElementById('qr-image');
     const qrBox = document.getElementById('qr-box');
     
+    // تأثير بصري أثناء التحميل
     qrBox.classList.add("animate-pulse");
-    qrImage.style.filter = "blur(8px)";
+    qrImage.style.filter = "blur(5px)";
+    qrImage.style.opacity = "0.5";
     
     try {
-        // نرسل الطلب وننتظر الرد مباشرة (السيرفر سيستغرق حوالي 5-10 ثوانٍ للرد بالباركود)
-        const response = await fetch(`/admin/get-qr/${storeId}`);
+        // نرسل الطلب للرابط الجديد الذي أعددته في البايثون
+        const response = await fetch(`/api/whatsapp/get-qr/${storeId}`);
         const data = await response.json();
 
-        if (data.qr_code) {
-            qrImage.src = data.qr_code;
+        if (data.status === "qr_ready" && data.qr_image) {
+            // تحديث الصورة بـ Base64 المستلم
+            qrImage.src = data.qr_image;
+            qrImage.style.filter = "none";
+            qrImage.style.opacity = "1";
             showToast("✅ تم توليد الباركود بنجاح");
-        } else if (data.status === "connected") {
+            console.log("📸 QR Image Updated (Base64)");
+        } 
+        else if (data.message && data.message.includes("متصل بالفعل")) {
+            // حالة المتجر متصل
             qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
-            showToast("✅ المتجر متصل بالفعل");
-        } else {
-            showToast(`⚠️ ${data.message || "جاري التوليد، حاول مجدداً"}`, false);
+            qrImage.style.filter = "none";
+            qrImage.style.opacity = "1";
+            showToast("✅ المتجر متصل بالفعل بالواتساب");
+        } 
+        else {
+            // حالات الخطأ الأخرى
+            showToast(`⚠️ ${data.message || "حاول مجدداً خلال ثوانٍ"}`, false);
         }
     } catch (err) {
         console.error("❌ Error fetching QR:", err);
         showToast("❌ فشل الاتصال بالسيرفر", false);
     } finally {
         qrBox.classList.remove("animate-pulse");
-        qrImage.style.filter = "none";
     }
 }
+
 
 // 2. دالة كود الربط
 async function requestPairingCode() {
