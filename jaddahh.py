@@ -49,47 +49,31 @@ from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse 
 templates = Jinja2Templates(directory=".") 
 # إعداد الـ Logger لضمان ظهور الأخطاء في سجلات ريندر
-# تعريف المتغيرات كـ None في البداية
 
-
-app = FastAPI()
-
-# إذا كان لديك ملفات CSS أو JS خارجية (اختياري)
-# app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-# تأكد من وجود المسارات التي يطلبها الـ JavaScript في ملفك
-
-
-logger = logging.getLogger("jaddahh")
-def get_db_connection():
-    # تأكد أن DATABASE_URL موجود في إعدادات ريندر ويبدأ بـ postgresql://
-    conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode='require')
-    return conn
-
-
-
-# قواميس لتخزين الجلسات والصفحات لكل متجر على حدة
-# 1. الإعدادات والتحميل
+# --- 1. الإعدادات والتحميل ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jaddahh")
 
 app = FastAPI(title="Salla AI Integrated Bot")
+templates = Jinja2Templates(directory=".")
+
+# إعدادات قاعدة البيانات والقنوات
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_session")
 
 # تكوين البيئة
 SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_sessions")
 
-# تحميل ملف .env فقط إذا كان موجوداً (للتطوير المحلي)
-# في ريندر، سيتم تجاهل هذا السطر واستخدام إعدادات البيئة المباشرة
-load_dotenv()
 
-# 1. جلب رابط قاعدة البيانات ومعالجة مشكلة "postgres://" في SQLAlchemy
-DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 
 # 2. جلب بقية المفاتيح
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -97,81 +81,109 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SALLA_CLIENT_ID = os.getenv("SALLA_CLIENT_ID")
 SALLA_CLIENT_SECRET = os.getenv("SALLA_CLIENT_SECRET")
 SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
-engine = create_engine(
-    DATABASE_URL,
-    pool_size=10,          # عدد الاتصالات المفتوحة الجاهزة للاستخدام
-    max_overflow=20,       # أقصى عدد اتصالات إضافية عند الضغط
-    pool_pre_ping=True,    # التحقق من سلامة الاتصال قبل استخدامه
-    pool_recycle=300       # إعادة تدوير الاتصال كل 5 دقائق
-)
 
-# إنشاء مصنع الجلسات
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# ========================================================
+# --- 2. دوال توليد الباركود ونظام الجسر (الجديدة) ---
+# ========================================================
 
-# --- استبدل قسم المتصفح القديم بهذا الكود ---
+def text_to_base64_qr(qr_text: str):
+    """تحويل نص الباركود الخام إلى صورة Base64 مباشرة في الذاكرة"""
+    try:
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_text)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        return f"data:image/png;base64,{img_str}"
+    except Exception as e:
+        logger.error(f"Error in image generation: {e}")
+        return f"Error in image generation: {e}"
+
+async def get_qr_from_bridge(store_id):
+    """تشغيل Node.js، التقاط نص QR، وتحويله لصورة ثم إغلاق العملية"""
+    logger.info(f"[*] Starting Bridge for Store: {store_id}...")
+    
+    process = None
+    try:
+        # تشغيل ملف الجافاسكريبت كعملية فرعية
+        process = await asyncio.create_subprocess_exec(
+            'node', 'wa-bridge.js', store_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        start_time = time.time()
+        # محاولة القراءة لمدة 30 ثانية كحد أقصى (Timeout)
+        while time.time() - start_time < 30:
+            line = await process.stdout.readline()
+            if not line: 
+                break
+            
+            line_decode = line.decode().strip()
+            
+            # 1. التقاط نص الباركود الخام
+            if "QR_DATA_START:" in line_decode:
+                raw_qr = line_decode.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
+                
+                logger.info("✅ [SUCCESS] Raw QR Received!")
+                base64_image = text_to_base64_qr(raw_qr)
+                
+                # إغلاق نظيف للعملية
+                process.terminate()
+                await process.wait() 
+                return base64_image
+
+            # 2. التحقق مما إذا كانت الجلسة مفتوحة أصلاً
+            if "SESSION_OPENED" in line_decode:
+                logger.info("✅ Session is already active!")
+                process.terminate()
+                await process.wait()
+                return "CONNECTED"
+
+    except Exception as e:
+        logger.error(f"❌ Error during bridge execution: {e}")
+    finally:
+        if process and process.returncode is None:
+            try:
+                process.kill()
+            except:
+                pass
+    return None
+
+# ========================================================
+# --- 3. روابط الـ API (Endpoints) ---
+# ========================================================
+
+@app.get("/api/whatsapp/get-qr/{store_id}")
+async def fetch_qr(store_id: str):
+    """الرابط الذي تستدعيه لوحة التحكم لعرض الباركود"""
+    base64_qr = await get_qr_from_bridge(store_id)
+    
+    if base64_qr == "CONNECTED":
+        return {"status": "success", "message": "المتجر متصل بالفعل ✅", "code": 200}
+    
+    if base64_qr:
+        return {
+            "status": "qr_ready",
+            "qr_image": base64_qr,
+            "message": "تم توليد الباركود بنجاح"
+        }
+    
+    return {"status": "error", "message": "فشل في توليد الباركود، حاول مجدداً"}
+
+# ... بقية الدوال الخاصة بك (get_db_connection, execute_db_query, salla_request, etc.) ...
+# [ملاحظة: تأكد من إبقاء بقية الكود كما هو بالأسفل]
 
 # --- قسم Baileys الجديد ---
-
-
-
-import sqlite3
-
-# دالة التهيئة الموحدة
-def init_local_db():
-    conn = sqlite3.connect('local_bot_cache.db', timeout=10)
-    cursor = conn.cursor()
-    # جدول الباركود (مؤقت)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS qr_cache (
-            store_id TEXT PRIMARY KEY,
-            qr_text TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # جدول الجلسات (الدائم نسبياً)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            store_id TEXT PRIMARY KEY,
-            creds_json TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-# دالة جلب الباركود المحدثة (للتوافق مع دالة get_whatsapp_qr)
-def get_qr_from_db(store_id):
-    try:
-        conn = sqlite3.connect('local_bot_cache.db')
-        cursor = conn.cursor()
-        # جلب الباركود بشرط ألا يكون قديماً (أقل من 30 ثانية)
-        cursor.execute('''
-            SELECT qr_text FROM qr_cache 
-            WHERE store_id = ? AND timestamp > datetime('now', '-30 seconds')
-        ''', (store_id,))
-        result = cursor.fetchone()
-        conn.close()
-        return result[0] if result else None
-    except:
-        return None
-
-# دالة حفظ الباركود
-def save_qr_to_db(store_id, qr_text):
-    try:
-        conn = sqlite3.connect('local_bot_cache.db', timeout=10)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO qr_cache (store_id, qr_text, timestamp) 
-            VALUES (?, ?, CURRENT_TIMESTAMP) 
-            ON CONFLICT(store_id) DO UPDATE SET 
-                qr_text = EXCLUDED.qr_text,
-                timestamp = CURRENT_TIMESTAMP
-        ''', (store_id, qr_text))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"❌ Error saving QR: {e}")
-
 class BaileysDirectHandler:
     def __init__(self, store_id: str):
         self.store_id = store_id
@@ -1500,106 +1512,23 @@ async def update_config(store_id: str, settings: dict):
 
 
 
-@app.get("/admin/get-qr/{store_id}")
-async def get_whatsapp_qr(store_id: str):
-    instance_id = f"{store_id}_main"
-    root_dir = os.getcwd()
-    db_path = 'local_bot_cache.db'
+@app.get("/api/whatsapp/get-qr/{store_id}")
+async def fetch_qr(store_id: str):
+    # استدعاء الدالة التي اختبرناها في Termux
+    base64_qr = await get_qr_from_bridge(store_id)
     
-    print(f"\n{'='*40}\n📱 [SQLITE-ONLY] طلب باركود للمتجر: {store_id}")
+    if base64_qr == "CONNECTED":
+        return {"status": "success", "message": "المتجر متصل بالفعل ✅", "code": 200}
+    
+    if base64_qr:
+        return {
+            "status": "qr_ready",
+            "qr_image": base64_qr,  # هذا هو الكود الذي سيوضع في وسم <img>
+            "message": "تم توليد الباركود بنجاح"
+        }
+    
+    return {"status": "error", "message": "فشل في توليد الباركود، حاول مجدداً"}
 
-    # --- 1. التحقق من وجود باركود "طازج" في SQLite ---
-    try:
-        with sqlite3.connect(db_path, timeout=15) as conn:
-            cursor = conn.cursor()
-            # نبحث عن باركود لم يتجاوز عمره 40 ثانية
-            cursor.execute("""
-                SELECT qr_text FROM qr_cache 
-                WHERE store_id = ? AND timestamp > datetime('now', '-40 seconds')
-            """, (store_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                print("🎯 [DB HIT] تقديم الباركود من SQLite مباشرة.")
-                return {
-                    "status": "ready", 
-                    "qr_code": text_to_base64_qr(row[0]),
-                    "source": "cache"
-                }
-    except Exception as e:
-        print(f"⚠️ [DB READ ERROR]: {e}")
-
-    # --- 2. إذا لم يوجد كاش: تنظيف المجلد القديم وتشغيل Node ---
-    session_dir = os.path.join(root_dir, f"auth_info_{store_id}")
-    try:
-        # قتل أي عملية Node قديمة لهذا المتجر لضمان عدم قفل الملفات
-        os.system(f"pkill -f 'node wa-bridge.js {store_id}'")
-        
-        if os.path.exists(session_dir):
-            shutil.rmtree(session_dir, ignore_errors=True)
-        os.makedirs(session_dir, exist_ok=True)
-    except: pass
-
-    # --- 3. تشغيل Node.js للحصول على باركود جديد وحفظه ---
-    process = None
-    try:
-        process = await asyncio.create_subprocess_exec(
-            'node', 'wa-bridge.js', store_id,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=root_dir
-        )
-
-        start_time = asyncio.get_event_loop().time()
-        timeout = 25 
-
-        while True:
-            if asyncio.get_event_loop().time() - start_time > timeout:
-                if process: process.terminate()
-                break
-
-            line = await process.stdout.readline()
-            if not line: break
-            
-            line_str = line.decode().strip()
-            print(f"📦 [NODE]: {line_str}")
-
-            if "QR_DATA_START:" in line_str:
-                qr_text = line_str.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
-                
-                # تحديث SQLite فوراً
-                save_to_sqlite(store_id, qr_text)
-                
-                # نترك العملية تعمل قليلاً ثم نقتلها لتوفير موارد Render
-                if process: process.terminate() 
-                
-                return {
-                    "status": "ready", 
-                    "qr_code": text_to_base64_qr(qr_text),
-                    "source": "new_generated"
-                }
-            
-            if "SESSION_OPENED" in line_str:
-                if process: process.terminate()
-                return {"status": "connected", "message": "الجلسة نشطة بالفعل ✅"}
-
-    except Exception as e:
-        if process: process.terminate()
-        return {"status": "error", "message": str(e)}
-
-    return {"status": "processing", "message": "جاري التحضير.. أعد المحاولة خلال ثوانٍ."}
-
-def save_to_sqlite(store_id, qr_text):
-    try:
-        with sqlite3.connect('local_bot_cache.db', timeout=20) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO qr_cache (store_id, qr_text, timestamp) 
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-            """, (store_id, qr_text))
-            conn.commit()
-            print(f"💾 [SQLITE] تم تحديث الكاش للمتجر {store_id}")
-    except Exception as e:
-        print(f"❌ [SQLITE SAVE ERROR]: {e}")
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
