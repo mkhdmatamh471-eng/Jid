@@ -39,7 +39,7 @@ import sqlite3
 import json
 import urllib.parse
 from fastapi import APIRouter
-
+import threading
 from fastapi.responses import HTMLResponse
 import psycopg2  
 from psycopg2.extras import RealDictCursor
@@ -72,7 +72,7 @@ SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_session")
 # تكوين البيئة
 SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_sessions")
 
-
+latest_qrs = {}
 
 
 # 2. جلب بقية المفاتيح
@@ -191,32 +191,48 @@ class BaileysDirectHandler:
 
     async def start_session(self):
         """تشغيل عملية Node.js للجلسة"""
-        # تشغيل ملف الـ js كعملية فرعية
+        # 1. تشغيل العملية
         self.process = subprocess.Popen(
             ["node", "wa-bridge.js", self.store_id],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            bufsize=1  # هام جداً لضمان القراءة السطرية الفورية
         )
-        logger.info(f"🚀 Started Baileys Direct for Store: {self.store_id}")
+        
+        # 2. إضافة الـ Thread هنا (المكان الصحيح)
+        # يبدأ بمجرد إنشاء العملية ليراقب الـ stdout الخاص بها
+        thread = threading.Thread(
+            target=monitor_output, 
+            args=(self.process, self.store_id), 
+            daemon=True
+        )
+        thread.start()
+        
+        logger.info(f"🚀 Started Baileys Bridge & Monitor for Store: {self.store_id}")
 
     async def send_text(self, phone: str, text: str):
         """إرسال أمر للملف البرمجي Node.js"""
         clean_phone = "".join(filter(str.isdigit, phone))
-        jid = f"{clean_phone}@s.whatsapp.net"
+        # التأكد من أننا نرسل التنسيق الذي يتوقعه ملف wa-bridge.js (SEND:رقم|نص)
+        command = f"SEND:{clean_phone}|{text}\n"
         
-        if self.process and self.process.poll() is None:
-            # إرسال الأمر عبر stdin
-            command = f"SEND:{jid}|{text}\n"
-            self.process.stdin.write(command)
-            self.process.stdin.flush()
-            return True
-        else:
-            # إذا لم تكن الجلسة تعمل، نشغلها ونحاول الإرسال
+        # التأكد من أن العملية تعمل قبل الإرسال
+        if self.process is None or self.process.poll() is not None:
             await self.start_session()
-            return False
+            # ننتظر قليلاً لضمان بدء التشغيل قبل الكتابة في stdin
+            import asyncio
+            await asyncio.sleep(1)
 
+        try:
+            if self.process and self.process.stdin:
+                self.process.stdin.write(command)
+                self.process.stdin.flush()
+                return True
+        except Exception as e:
+            logger.error(f"❌ Failed to write to Node.js stdin: {e}")
+        return False
 
 # استبدل الـ Handler القديم في كودك بهذا
 async def get_handler_for_store(store_id: str):
@@ -292,6 +308,16 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 
+def monitor_output(process, store_id):
+    for line in iter(process.stdout.readline, ''):
+        if "QR_DATA_START:" in line:
+            # استخراج الكود من بين العلامات
+            qr_code = line.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
+            latest_qrs[store_id] = qr_code
+            print(f"✅ New QR Received for Store {store_id}")
+        elif "SESSION_OPENED" in line:
+            latest_qrs[store_id] = "CONNECTED"
+
 # تحديد مسار حفظ بيانات الجلسة (سيتم إنشاء مجلد في نفس مسار السكربت)
 
 
@@ -308,21 +334,6 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 
-async def get_handler_for_store(store_id: str):
-    """
-    بديل النظام القديم: يعيد Handler يتعامل مع API بدلاً من Page
-    """
-    handler = BaileysHandler(store_id)
-    
-    # فحص هل الجلسة تعمل؟
-    is_alive = await handler.get_status()
-    
-    if not is_alive:
-        logger.warning(f"⚠️ جلسة المتجر {store_id} غير متصلة في Baileys.")
-        # هنا يمكنك محاولة تشغيلها تلقائياً إذا أردت
-        # await init_whatsapp_session(store_id)
-        
-    return handler
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
