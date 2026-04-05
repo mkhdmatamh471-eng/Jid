@@ -18,6 +18,9 @@ RUN apt-get update && apt-get install -y \
     libxcomposite1 \
     libcups2 \
     libdrm2 \
+    libpangocairo-1.0-0 \
+    libpango-1.0-0 \
+    libx11-xcb1 \
     libxkbcommon0 \
     libxrandr2 \
     libgbm1 \
