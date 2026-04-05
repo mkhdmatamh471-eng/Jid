@@ -1,7 +1,7 @@
 import os
 import hmac
 import hashlib
-import shuti
+import shutil
 import tarfile
 import json
 import qrcode
