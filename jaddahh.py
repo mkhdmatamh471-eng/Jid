@@ -87,14 +87,8 @@ SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 # ========================================================
 
 def text_to_base64_qr(qr_text: str):
-    """تحويل نص الباركود الخام إلى صورة Base64 مباشرة في الذاكرة"""
     try:
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
         qr.add_data(qr_text)
         qr.make(fit=True)
 
@@ -102,11 +96,12 @@ def text_to_base64_qr(qr_text: str):
         buffered = BytesIO()
         img.save(buffered, format="PNG")
         
-        img_str = base64.b64encode(buffered.getvalue()).decode()
+        # استخدام .strip() للتأكد من عدم وجود مسافات زائدة
+        img_str = base64.b64encode(buffered.getvalue()).decode().strip()
         return f"data:image/png;base64,{img_str}"
     except Exception as e:
-        logger.error(f"Error in image generation: {e}")
-        return f"Error in image generation: {e}"
+        logger.error(f"❌ Error: {e}")
+        return None
 
 async def get_qr_from_bridge(store_id):
     """تشغيل Node.js، التقاط نص QR، وتحويله لصورة ثم إغلاق العملية"""
