@@ -373,63 +373,31 @@ async function refreshQR() {
     console.log("🟢 [FRONTEND] بدء طلب refreshQR()");
     const qrImage = document.getElementById('qr-image');
     const qrBox = document.getElementById('qr-box');
+    
     qrBox.classList.add("animate-pulse");
     qrImage.style.filter = "blur(8px)";
-    const delay = ms => new Promise(res => setTimeout(res, ms));
-    let attempts = 0;
-    const maxAttempts = 3;
+    
+    try {
+        // نرسل الطلب وننتظر الرد مباشرة (السيرفر سيستغرق حوالي 5-10 ثوانٍ للرد بالباركود)
+        const response = await fetch(`/admin/get-qr/${storeId}`);
+        const data = await response.json();
 
-    async function fetchWithRetry() {
-        console.log(`🔄 [FRONTEND] المحاولة رقم: ${attempts + 1}`);
-        try {
-            if (attempts === 0) await delay(2000); 
-            
-            console.log(`🌐 [FRONTEND] إرسال Fetch إلى: /admin/get-qr/${storeId}`);
-            const response = await fetch(`/admin/get-qr/${storeId}`);
-            console.log(`📥 [FRONTEND] حالة الرد: ${response.status}`);
-            
-            if (!response.ok) {
-                const errText = await response.text();
-                console.error(`❌ [FRONTEND] رد غير ناجح من السيرفر:`, errText);
-                throw new Error(`Server Error: ${response.status}`);
-            }
-            
-            const data = await response.json();
-            console.log(`📦 [FRONTEND] البيانات المستلمة:`, data);
-
-            if (data.qr_code) {
-                console.log("✅ [FRONTEND] تم تعيين صورة الباركود بنجاح.");
-                qrImage.src = data.qr_code;
-                return true;
-            } 
-            if (data.status === "connected") {
-                console.log("✅ [FRONTEND] المتجر متصل بالفعل.");
-                qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
-                return true;
-            }
-            
-            console.warn(`⚠️ [FRONTEND] الرد لم يحتوي على باركود. الحالة: ${data.status}`);
-            if (attempts < maxAttempts) {
-                attempts++;
-                await delay(3000); 
-                return await fetchWithRetry();
-            }
-        } catch (err) {
-            console.error(`❌ [FRONTEND] خطأ أثناء جلب الباركود:`, err);
-            if (attempts < maxAttempts) {
-                attempts++;
-                await delay(3000);
-                return await fetchWithRetry();
-            }
-            showToast("❌ فشل الاتصال بالسيرفر، انظر الكونسول للتفاصيل", false);
+        if (data.qr_code) {
+            qrImage.src = data.qr_code;
+            showToast("✅ تم توليد الباركود بنجاح");
+        } else if (data.status === "connected") {
+            qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
+            showToast("✅ المتجر متصل بالفعل");
+        } else {
+            showToast(`⚠️ ${data.message || "جاري التوليد، حاول مجدداً"}`, false);
         }
-        return false;
+    } catch (err) {
+        console.error("❌ Error fetching QR:", err);
+        showToast("❌ فشل الاتصال بالسيرفر", false);
+    } finally {
+        qrBox.classList.remove("animate-pulse");
+        qrImage.style.filter = "none";
     }
-
-    await fetchWithRetry();
-    qrBox.classList.remove("animate-pulse");
-    qrImage.style.filter = "none";
-    console.log("🏁 [FRONTEND] انتهاء دورة refreshQR()");
 }
 
 // 2. دالة كود الربط
