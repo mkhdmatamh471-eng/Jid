@@ -1,53 +1,38 @@
-# 1. القاعدة الأساسية
+# استخدام صورة بايثون نحيفة كقاعدة أساسية
 FROM python:3.10-slim
 
-# 2. مجلد العمل
-WORKDIR /app
+# منع بايثون من إنشاء ملفات .pyc وتفعيل التحديث الفوري للسجلات (Logs)
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
-# 3. تثبيت التبعات (تم إضافة مكتبات الوسائط والتشفير الضرورية لـ Baileys)
-RUN apt-get update && apt-get install -y \
+# تثبيت Node.js وأدوات النظام الضرورية
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg \
     build-essential \
     libpq-dev \
-    curl \
-    python3-dev \
-    gcc \
-    git \
-    ffmpeg \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libxcomposite1 \
-    libcups2 \
-    libdrm2 \
-    libpangocairo-1.0-0 \
-    libpango-1.0-0 \
-    libx11-xcb1 \
-    libxkbcommon0 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    && curl -sL https://deb.nodesource.com/setup_18.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# 4. نسخ ملفات التعريف لسرعة البناء
-COPY requirements.txt package.json package-lock.json* ./
+WORKDIR /app
 
-# 5. تثبيت المكتبات (بايثون ونود)
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
-    && npm install --production
+# 1. تثبيت تبعات Node.js أولاً (للاستفادة من خاصية الـ Caching)
+COPY package.json .
+# تأكد من أن package.json يحتوي على "pg" و "@whiskeysockets/baileys"
+RUN npm install --production
 
-# 6. نسخ بقية الملفات
+# 2. تثبيت تبعات Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. نسخ كود المشروع بالكامل
 COPY . .
 
-# 7. إعداد البيئة والمجلدات المؤقتة
-ENV PORT=10000
-ENV PYTHONUNBUFFERED=1
-# Render يحتاج لصلاحيات كاملة على المجلدات التي سيكتب فيها نود
-RUN mkdir -p /tmp && chmod -R 777 /tmp
-
+# ملاحظة: تم إزالة إنشاء مجلد whatsapp_sessions لأننا نعتمد الآن على PostgreSQL
+# ولكن سنترك تصريح المنفذ (Port) كإجراء تنظيمي لـ Render
 EXPOSE 10000
 
-# 8. التشغيل
-CMD ["sh", "-c", "uvicorn jaddahh:app --host 0.0.0.0 --port ${PORT}"]
+# تشغيل التطبيق الرئيسي
+CMD ["python", "jaddahh.py"]
