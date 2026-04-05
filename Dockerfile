@@ -1,16 +1,17 @@
-# استخدام صورة بايثون نحيفة كقاعدة أساسية
+# استخدام صورة بايثون نحيفة
 FROM python:3.10-slim
 
-# منع بايثون من إنشاء ملفات .pyc وتفعيل التحديث الفوري للسجلات (Logs)
+# إعدادات البيئة
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-# تثبيت Node.js وأدوات النظام الضرورية
+# تثبيت Node.js والتبعيات اللازمة للبناء
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     build-essential \
     libpq-dev \
+    python3 \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean \
@@ -18,21 +19,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 1. تثبيت تبعات Node.js أولاً (للاستفادة من خاصية الـ Caching)
-COPY package.json .
-# تأكد من أن package.json يحتوي على "pg" و "@whiskeysockets/baileys"
-RUN npm install --production
+# نسخ ملفات التبعيات أولاً
+COPY package.json ./
+# إذا كان لديك ملف package-lock.json انسخه أيضاً لضمان استقرار النسخ
+COPY package-lock.json* ./
 
-# 2. تثبيت تبعات Python
+# محاولة التثبيت مع زيادة المهلة الزمنية وتجاهل الـ Scripts غير الضرورية
+# واستخدام --no-audit لتوفير الذاكرة في Render
+RUN npm install --production --no-audit --fund false || \
+    (sleep 5 && npm install --production --no-audit --fund false)
+
+# تثبيت مكتبات بايثون
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 3. نسخ كود المشروع بالكامل
+# نسخ بقية الملفات
 COPY . .
 
-# ملاحظة: تم إزالة إنشاء مجلد whatsapp_sessions لأننا نعتمد الآن على PostgreSQL
-# ولكن سنترك تصريح المنفذ (Port) كإجراء تنظيمي لـ Render
 EXPOSE 10000
 
-# تشغيل التطبيق الرئيسي
 CMD ["python", "jaddahh.py"]
