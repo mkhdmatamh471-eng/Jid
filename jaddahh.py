@@ -104,8 +104,8 @@ def text_to_base64_qr(qr_text: str):
         return None
 
 async def get_qr_from_bridge(store_id):
-    """تشغيل Node.js، التقاط نص QR، وتحويله لصورة ثم إغلاق العملية"""
-    logger.info(f"[*] Starting Bridge for Store: {store_id}...")
+    """تشغيل Node.js، التقاط نص QR مع طباعة تفصيلية لكل مرحلة لـ Render Logs"""
+    logger.info(f"🚀 [STEP 1] Starting Bridge for Store: {store_id}...")
     
     process = None
     try:
@@ -115,23 +115,38 @@ async def get_qr_from_bridge(store_id):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+        
+        logger.info(f"📡 [STEP 2] Node.js process started (PID: {process.pid})")
 
         start_time = time.time()
-        # محاولة القراءة لمدة 30 ثانية كحد أقصى (Timeout)
-        while time.time() - start_time < 30:
+        # محاولة القراءة لمدة 45 ثانية (زيادة المهلة لبيئة Render المحدودة)
+        while time.time() - start_time < 45:
+            # قراءة سطر من المخرجات
             line = await process.stdout.readline()
-            if not line: 
+            if not line:
+                # التحقق إذا كانت العملية قد انتهت بشكل مفاجئ
+                if process.returncode is not None:
+                    logger.error(f"⚠️ [WARNING] Node process exited with code: {process.returncode}")
                 break
             
             line_decode = line.decode().strip()
+            
+            # طباعة كل ما يخرج من Node.js (هام جداً للمراقبة)
+            if line_decode:
+                logger.info(f"🖥️ [NODE_LOG]: {line_decode}")
             
             # 1. التقاط نص الباركود الخام
             if "QR_DATA_START:" in line_decode:
                 raw_qr = line_decode.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
                 
-                logger.info("✅ [SUCCESS] Raw QR Received!")
-                base64_image = text_to_base64_qr(raw_qr)
+                logger.info(f"✅ [STEP 3] Raw QR String Received: {raw_qr[:20]}...") # طباعة بداية النص للتأكد
                 
+                base64_image = text_to_base64_qr(raw_qr)
+                if base64_image:
+                    logger.info("🖼️ [STEP 4] Base64 Image generated successfully")
+                else:
+                    logger.error("❌ [ERROR] Failed to convert QR text to Base64 Image")
+
                 # إغلاق نظيف للعملية
                 process.terminate()
                 await process.wait() 
@@ -139,16 +154,26 @@ async def get_qr_from_bridge(store_id):
 
             # 2. التحقق مما إذا كانت الجلسة مفتوحة أصلاً
             if "SESSION_OPENED" in line_decode:
-                logger.info("✅ Session is already active!")
+                logger.info(f"🔗 [INFO] Store {store_id} is already connected (SESSION_OPENED)")
                 process.terminate()
                 await process.wait()
                 return "CONNECTED"
 
+        # إذا وصلنا هنا، يعني انتهى الوقت دون الحصول على QR
+        elapsed = time.time() - start_time
+        logger.error(f"⏳ [TIMEOUT] Bridge timed out after {elapsed:.2f}s without finding QR")
+        
+        # قراءة الأخطاء (stderr) في حال الفشل
+        stderr_data = await process.stderr.read()
+        if stderr_data:
+            logger.error(f"❗ [STDERR]: {stderr_data.decode()}")
+
     except Exception as e:
-        logger.error(f"❌ Error during bridge execution: {e}")
+        logger.error(f"❌ [CRITICAL] Exception in get_qr_from_bridge: {str(e)}")
     finally:
         if process and process.returncode is None:
             try:
+                logger.info("🧹 [CLEANUP] Killing remaining process...")
                 process.kill()
             except:
                 pass
