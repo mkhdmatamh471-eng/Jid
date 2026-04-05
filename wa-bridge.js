@@ -8,78 +8,82 @@ const {
 const pino = require("pino");
 const fs = require('fs');
 const path = require('path');
-const { createClient } = require('@supabase/supabase-js');
+const { Client } = require('pg'); // استخدام مكتبة pg مباشرة
 
-// --- إعدادات Supabase ---
-// تأكد من إضافة هذه المتغيرات في بيئة Render (Environment Variables)
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+// --- إعداد الاتصال بـ PostgreSQL ---
+const dbConfig = {
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false } // مطلوب لاتصالات Render/Supabase
+};
 
-// --- دوال المزامنة مع قاعدة البيانات ---
-async function syncSessionToSupabase(storeId, sessionDir) {
+const db = new Client(dbConfig);
+db.connect().catch(err => console.error("❌ DB_CONNECTION_ERROR:", err.message));
+
+// --- دوال المزامنة مع PostgreSQL ---
+
+/**
+ * تحويل مجلد الجلسة إلى كائن JSON وتخزينه في القاعدة
+ */
+async function syncSessionToPostgres(storeId, sessionDir) {
     try {
         if (!fs.existsSync(sessionDir)) return;
-        
+
         const files = fs.readdirSync(sessionDir);
         const sessionData = {};
-        
+
         for (const file of files) {
-            // نقوم بقراءة ملفات الجلسة (JSON فقط) لتخزينها
             if (file.endsWith('.json')) {
                 const filePath = path.join(sessionDir, file);
                 const fileContent = fs.readFileSync(filePath, 'utf-8');
                 sessionData[file] = JSON.parse(fileContent);
             }
         }
-        
-        // رفع البيانات ككائن JSON واحد إلى عمود session_data
-        const { error } = await supabase
-            .from('stores') // استبدل 'stores' باسم جدولك الفعلي
-            .upsert({ store_id: storeId, session_data: sessionData });
-            
-        if (error) throw error;
-        // console.log(`☁️ [SYNC] Session synced to Supabase for Store: ${storeId}`);
+
+        const query = `
+            INSERT INTO whatsapp_sessions (store_id, session_data, last_connected)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (store_id) DO UPDATE 
+            SET session_data = EXCLUDED.session_data, last_connected = NOW();
+        `;
+
+        await db.query(query, [storeId, JSON.stringify(sessionData)]);
     } catch (error) {
         console.error(`❌ [SYNC_ERROR] ${error.message}`);
     }
 }
 
-async function restoreSessionFromSupabase(storeId, sessionDir) {
+/**
+ * استعادة الملفات من قاعدة البيانات إلى مجلد /tmp
+ */
+async function restoreSessionFromPostgres(storeId, sessionDir) {
     try {
-        const { data, error } = await supabase
-            .from('stores') // استبدل 'stores' باسم جدولك الفعلي
-            .select('session_data')
-            .eq('store_id', storeId)
-            .single();
+        const res = await db.query('SELECT session_data FROM whatsapp_sessions WHERE store_id = $1', [storeId]);
+        
+        if (res.rows.length > 0 && res.rows[0].session_data) {
+            const sessionData = typeof res.rows[0].session_data === 'string' 
+                ? JSON.parse(res.rows[0].session_data) 
+                : res.rows[0].session_data;
 
-        if (error && error.code !== 'PGRST116') { // تجاهل خطأ "عدم وجود سجل"
-            throw error;
-        }
-
-        if (data && data.session_data) {
             if (!fs.existsSync(sessionDir)) {
                 fs.mkdirSync(sessionDir, { recursive: true });
             }
-            // إعادة بناء الملفات في مجلد /tmp
-            for (const [filename, content] of Object.entries(data.session_data)) {
+
+            for (const [filename, content] of Object.entries(sessionData)) {
                 fs.writeFileSync(path.join(sessionDir, filename), JSON.stringify(content, null, 2));
             }
-            console.log(`📥 [RESTORE] Session restored from Supabase for Store: ${storeId}`);
+            console.log(`📥 SESSION_RESTORED_FROM_DB:${storeId}`);
         }
     } catch (error) {
-         console.error(`❌ [RESTORE_ERROR] ${error.message}`);
+        console.error(`❌ [RESTORE_ERROR] ${error.message}`);
     }
 }
 
 // --- الدالة الأساسية لتشغيل واتساب ---
 async function startWhatsApp(storeId) {
-    // 1. استخدام مسار /tmp لأنه مسموح الكتابة فيه في بيئات الخوادم السحابية مثل Render
     const sessionDir = path.join('/tmp', `auth_info_${storeId}`);
-    const qrFilePath = path.join(sessionDir, 'last_qr.txt');
-
-    // 2. محاولة استرجاع الجلسة السابقة من قاعدة البيانات قبل التشغيل
-    await restoreSessionFromSupabase(storeId, sessionDir);
+    
+    // 1. استعادة الجلسة أولاً
+    await restoreSessionFromPostgres(storeId, sessionDir);
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version } = await fetchLatestBaileysVersion();
@@ -87,16 +91,16 @@ async function startWhatsApp(storeId) {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false, 
+        printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["Ubuntu", "Chrome", "20.0.04"], // تغيير لتقليل الحظر
-        syncFullHistory: false 
+        browser: ["Salla AI", "Chrome", "1.0.0"],
+        syncFullHistory: false
     });
 
-    // 3. عند تحديث الاعتمادات، احفظها محلياً وارفعها إلى Supabase
+    // 2. تحديث الاعتمادات (مزامنة فورية)
     sock.ev.on("creds.update", async () => {
         await saveCreds();
-        await syncSessionToSupabase(storeId, sessionDir);
+        await syncSessionToPostgres(storeId, sessionDir);
     });
 
     sock.ev.on("connection.update", async (update) => {
@@ -104,51 +108,37 @@ async function startWhatsApp(storeId) {
 
         if (qr) {
             console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
-            try { fs.writeFileSync(qrFilePath, qr, { flush: true }); } catch (err) {}
         }
 
         if (connection === "close") {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-            console.log(`SESSION_CLOSED:${storeId}:RECONNECT:${shouldReconnect}`);
-
-            if (fs.existsSync(qrFilePath)) {
-                try { fs.unlinkSync(qrFilePath); } catch(e) {}
-            }
-
             if (shouldReconnect) {
                 startWhatsApp(storeId);
             } else {
-                // إذا قام المستخدم بتسجيل الخروج من هاتفه، امسح الجلسة محلياً ومن قاعدة البيانات
+                // حذف الجلسة من القاعدة إذا سجل المستخدم خروجاً يدوياً
+                await db.query('DELETE FROM whatsapp_sessions WHERE store_id = $1', [storeId]);
                 fs.rmSync(sessionDir, { recursive: true, force: true });
-                await supabase.from('stores').update({ session_data: null }).eq('store_id', storeId);
-                console.log(`🗑️ [CLEANUP] Session deleted for Store: ${storeId}`);
+                console.log(`🗑️ SESSION_DELETED:${storeId}`);
             }
         } else if (connection === "open") {
             console.log(`SESSION_OPENED:${storeId}`);
-            // رفع نهائي بعد فتح الاتصال لضمان حفظ كل المفاتيح
-            await syncSessionToSupabase(storeId, sessionDir);
-
-            if (fs.existsSync(qrFilePath)) {
-                setTimeout(() => {
-                    try { fs.unlinkSync(qrFilePath); } catch(e) {}
-                }, 2000); 
-            }
+            await syncSessionToPostgres(storeId, sessionDir);
         }
     });
 
+    // --- استقبال أوامر الإرسال من بايثون ---
     process.stdin.on("data", async (data) => {
         try {
             const str = data.toString().trim();
             if (str.startsWith("SEND:")) {
-                const parts = str.replace("SEND:", "").split("|");
-                if (parts.length >= 2) {
-                    const rawJid = parts[0];
-                    const jid = rawJid.includes("@") ? rawJid : `${rawJid}@s.whatsapp.net`;
-                    await sock.sendMessage(jid, { text: parts[1] });
-                    console.log(`[SUCCESS_SEND] To: ${jid}`);
-                }
+                const [phone, ...msgParts] = str.replace("SEND:", "").split("|");
+                const message = msgParts.join("|");
+                const jid = phone.includes("@") ? phone : `${phone}@s.whatsapp.net`;
+                
+                await sock.sendMessage(jid, { text: message });
+                console.log(`[SUCCESS_SEND] To: ${jid}`);
             }
         } catch (err) {
             console.error(`[SEND_ERROR] ${err.message}`);
@@ -156,10 +146,8 @@ async function startWhatsApp(storeId) {
     });
 }
 
+// البدء
 const storeId = process.argv[2];
 if (storeId) {
-    console.log(`[BRIDGE_STARTED] Target Store: ${storeId}`);
     startWhatsApp(storeId).catch(err => console.error("CRITICAL_NODE_ERROR:", err));
-} else {
-    process.exit(1);
 }
