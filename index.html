@@ -194,17 +194,24 @@
                     <button id="tabCode" onclick="switchLinkMode('code')" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-500 hover:text-gray-900 transition">كود الربط</button>
                 </div>
 
-                <div id="modeQr">
-                    <div id="qr-box" class="qr-gradient flex items-center justify-center w-56 h-56 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden">
-                        <img id="qr-image" src="https://via.placeholder.com/200?text=Scan+QR" class="max-w-[85%] max-h-[85%] object-contain rounded-lg shadow-sm" alt="QR Code">
-                    </div>
-                    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
-                        افتح واتساب > الأجهزة المرتبطة > ربط جهاز ثم امسح الكود.
-                    </p>
-                    <button onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm">
-                        توليد كود جديد 🔄
-                    </button>
-                </div>
+     <div id="modeQr">
+    <div id="qr-box" class="qr-gradient flex items-center justify-center w-56 h-56 mx-auto rounded-3xl border-2 border-dashed border-gray-200 overflow-hidden bg-white relative">
+        <div id="qr-loader" class="absolute inset-0 flex items-center justify-center hidden">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        </div>
+        <img id="qr-image" src="https://img.icons8.com/ios/100/71717a/qr-code--v1.png" 
+             class="max-w-[85%] max-h-[85%] object-contain rounded-lg transition-opacity duration-300" 
+             alt="QR Code">
+    </div>
+    <p class="text-[11px] text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded-lg text-center">
+        افتح واتساب > الأجهزة المرتبطة > ربط جهاز ثم امسح الكود.
+    </p>
+    <button id="btnRefreshQR" onclick="refreshQR()" class="mt-4 w-full py-3 text-blue-600 text-sm font-bold border border-blue-100 bg-blue-50 rounded-xl hover:bg-blue-100 transition shadow-sm flex items-center justify-center gap-2">
+        <span>توليد كود جديد</span>
+        <span id="refreshIcon">🔄</span>
+    </button>
+</div>
+
 
                 <div id="modeCode" class="hidden">
                     <p class="text-[11px] text-gray-500 mb-4 leading-relaxed bg-gray-50 p-2 rounded-lg">
