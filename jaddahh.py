@@ -1438,78 +1438,67 @@ async def update_config(store_id: str, settings: dict):
 @app.get("/admin/get-qr/{store_id}")
 async def get_whatsapp_qr(store_id: str):
     instance_id = f"{store_id}_main"
-    # طباعة واضحة لبداية العملية
-    print(f"\n{'#'*60}\n🔍 [DEBUG] بدء عملية جلب الباركود للمتجر: {instance_id}")
-
-    # تحديد المسارات المطلقة لضمان أن بايثون ونود يقرآن من نفس المكان
-    root_dir = os.getcwd()
-    session_dir = os.path.join(root_dir, f"auth_info_{store_id}")
-    qr_file_path = os.path.join(session_dir, "last_qr.txt")
-    creds_path = os.path.join(session_dir, "creds.json")
-
-    print(f"📂 [PATH] Root: {root_dir}")
-    print(f"📂 [PATH] QR File: {qr_file_path}")
+    print(f"\n{'#'*60}\n🔍 [PIPE MODE] بدء مراقبة مخرجات Node للمتجر: {instance_id}")
 
     try:
-        # 1. فحص هل الجلسة متصلة (creds.json موجود وحجمه أكبر من 0)
-        if os.path.exists(creds_path) and os.path.getsize(creds_path) > 0:
-            print(f"✅ [CHECK] ملف creds.json موجود. الجلسة مفعلة.")
-            if not os.path.exists(qr_file_path):
+        # تشغيل الجسر والتقاط المخرجات والخطأ
+        process = await asyncio.create_subprocess_exec(
+            'node', 'wa-bridge.js', store_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=os.getcwd()
+        )
+
+        print(f"⏳ [WAIT] ننتظر صدور الباركود من الذاكرة مباشرة...")
+
+        # قراءة المخرجات سطر بسطر (لمدة أقصاها 15 ثانية مثلاً)
+        timeout = 15 
+        start_time = asyncio.get_event_loop().time()
+
+        while True:
+            # فحص الوقت لمنع التعليق
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                print("❌ [TIMEOUT] استغرق Node وقتاً طويلاً ولم يرسل باركود.")
+                break
+
+            # قراءة سطر واحد من مخرجات Node
+            line = await process.stdout.readline()
+            if not line:
+                break
+            
+            line_str = line.decode().strip()
+            print(f"📦 [NODE LOG]: {line_str}") # ستظهر في سجلات Render للتتبع
+
+            # البحث عن علامة الباركود التي سنضعها في كود JS
+            if "QR_DATA_START:" in line_str:
+                qr_text = line_str.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
+                
+                print(f"🎯 [SUCCESS] تم التقاط الباركود من الذاكرة!")
+                
+                # تحويل النص إلى صورة Base64
+                qr_img = qrcode.make(qr_text)
+                buffered = BytesIO()
+                qr_img.save(buffered, format="PNG")
+                img_str = base64.b64encode(buffered.getvalue()).decode()
+                
+                return {
+                    "status": "ready", 
+                    "qr_code": f"data:image/png;base64,{img_str}",
+                    "instance_name": instance_id
+                }
+            
+            # إذا طبع Node أن الجلسة مفتوحة أصلاً
+            if "SESSION_OPENED" in line_str:
                 return {"status": "connected", "message": "الجلسة متصلة بالفعل ✅"}
 
-        # 2. تشغيل Node.js إذا لم يكن الملف موجوداً
-        if not os.path.exists(qr_file_path):
-            print(f"🏗️ [STEP 1] ملف الباركود غير موجود. جاري تشغيل Node.js...")
-            
-            # تشغيل الجسر كعملية خلفية غير حاصرة
-            process = await asyncio.create_subprocess_exec(
-                'node', 'wa-bridge.js', store_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            print(f"⏳ [WAIT] تم إطلاق عملية Node (PID: {process.pid}). ننتظر 5 ثوانٍ للتوليد...")
-            await asyncio.sleep(5) # زدنا الوقت قليلاً لضمان الكتابة على قرص Render
-
-        # 3. محاولة القراءة المتكررة (Polling) للتغلب على تأخير الكتابة
-        for attempt in range(1, 4): # 3 محاولات قراءة
-            print(f"📖 [READ] محاولة قراءة الملف رقم {attempt}...")
-            if os.path.exists(qr_file_path):
-                with open(qr_file_path, "r", encoding="utf-8") as f:
-                    qr_text = f.read().strip()
-                
-                if qr_text and len(qr_text) > 10: # التأكد أن النص ليس فارغاً
-                    print(f"🎯 [SUCCESS] تم العثور على نص الباركود بنجاح.")
-                    
-                    # توليد الصورة
-                    qr_img = qrcode.make(qr_text)
-                    buffered = BytesIO()
-                    qr_img.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
-                    
-                    # حذف الملف بعد القراءة لضمان عدم ظهور باركود قديم لاحقاً (اختياري)
-                    # os.remove(qr_file_path) 
-                    
-                    return {
-                        "status": "ready", 
-                        "qr_code": f"data:image/png;base64,{img_str}",
-                        "instance_name": instance_id
-                    }
-                else:
-                    print(f"⚠️ [WARN] الملف موجود لكنه فارغ أو غير مكتمل.")
-            
-            await asyncio.sleep(2) # انتظار بين المحاولات
-
-        print(f"❌ [FAIL] لم يتم العثور على ملف الباركود بعد المحاولات.")
         return {
             "status": "processing", 
-            "message": "جاري تهيئة الواتساب.. انتظر ثوانٍ وحدث الصفحة."
+            "message": "جاري التوليد.. حدث الصفحة خلال ثوانٍ."
         }
 
     except Exception as e:
-        print(f"🚨 [CRITICAL ERROR] {str(e)}")
-        import traceback
-        traceback.print_exc() # طباعة تفاصيل الخطأ كاملة في سجلات Render
-        return {"status": "error", "message": f"خطأ داخلي: {str(e)}"}
+        print(f"🚨 [ERROR] {str(e)}")
+        return {"status": "error", "message": str(e)}
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
