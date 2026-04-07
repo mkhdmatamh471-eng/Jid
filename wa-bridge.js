@@ -3,7 +3,8 @@ const {
     DisconnectReason, 
     initAuthCreds, 
     BufferJSON, 
-    proto 
+    proto,
+    fetchLatestBaileysVersion 
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const pino = require("pino");
@@ -12,80 +13,108 @@ const { Client } = require("pg");
 const storeId = process.argv[2] || "default";
 const phoneNumber = process.argv[3];
 
-console.log(`[START] 🚀 بدء تشغيل الجسر للمتجر: ${storeId}`);
+console.log(`[START] 🚀 بدء تشغيل الجسر الذري للمتجر: ${storeId}`);
 
+// استخدام الـ Pooler (المنفذ 6543) إذا توفر في DATABASE_URL لضمان استقرار العمليات المتزامنة
 const dbClient = new Client({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false } 
 });
 
-async function usePostgresAuthState(storeId) {
-    console.log(`[DB] 🔄 محاولة الاتصال بقاعدة البيانات...`);
+/**
+ * دالة إدارة الجلسة بنظام "الصفوف المنفصلة" - Atomic System
+ */
+async function useAtomicAuthState(storeId) {
     try {
         if (!dbClient._connected) await dbClient.connect();
-        console.log(`[DB] ✅ متصل.`);
+        console.log(`[DB] ✅ متصل بنظام الأرشفة الذرية.`);
     } catch (e) {
         console.error(`[DB_ERROR] ❌ فشل الاتصال: ${e.message}`);
     }
 
-    const res = await dbClient.query("SELECT creds, keys FROM whatsapp_sessions WHERE store_id = $1", [storeId]);
-    
-    let creds = res.rows[0]?.creds ? JSON.parse(res.rows[0].creds, BufferJSON.reviver) : initAuthCreds();
-    let keys = res.rows[0]?.keys ? JSON.parse(res.rows[0].keys, BufferJSON.reviver) : {};
-
-    const saveCreds = async () => {
+    // دالة الكتابة (حفظ قطعة بيانات واحدة)
+    const writeData = async (data, id) => {
         try {
-            const credsJSON = JSON.stringify(creds, BufferJSON.replacer);
-            const keysJSON = JSON.stringify(keys, BufferJSON.replacer);
+            const jsonStr = JSON.stringify(data, BufferJSON.replacer);
+            // المفتاح الفريد هو دمج storeId مع نوع البيانات (id)
             await dbClient.query(`
-                INSERT INTO whatsapp_sessions (store_id, creds, keys)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (store_id) DO UPDATE SET creds = $2, keys = $3
-            `, [storeId, credsJSON, keysJSON]);
+                INSERT INTO whatsapp_sessions (store_id, key_id, data) 
+                VALUES ($1, $2, $3) 
+                ON CONFLICT (store_id, key_id) DO UPDATE SET data = $3
+            `, [storeId, id, jsonStr]);
         } catch (err) {
-            console.error(`[SAVE_ERROR] ❌ فشل الحفظ: ${err.message}`);
+            console.error(`[DB_WRITE_ERR] ❌ فشل حفظ ${id}:`, err.message);
         }
     };
+
+    // دالة القراءة
+    const readData = async (id) => {
+        try {
+            const res = await dbClient.query(
+                "SELECT data FROM whatsapp_sessions WHERE store_id = $1 AND key_id = $2", 
+                [storeId, id]
+            );
+            return res.rows.length > 0 ? JSON.parse(JSON.stringify(res.rows[0].data), BufferJSON.reviver) : null;
+        } catch (err) {
+            return null;
+        }
+    };
+
+    // دالة الحذف
+    const removeData = async (id) => {
+        await dbClient.query(
+            "DELETE FROM whatsapp_sessions WHERE store_id = $1 AND key_id = $2", 
+            [storeId, id]
+        );
+    };
+
+    // جلب بيانات الاعتماد الأساسية
+    const creds = await readData('creds') || initAuthCreds();
 
     return {
         state: {
             creds,
             keys: {
-                get: (type, ids) => {
+                get: async (type, ids) => {
                     const data = {};
-                    ids.forEach(id => {
-                        let value = keys[type]?.[id];
-                        if (value) {
-                            if (type === 'app-state-sync-key') value = proto.Message.AppStateSyncKeyData.fromObject(value);
-                            data[id] = value;
+                    await Promise.all(ids.map(async (id) => {
+                        let value = await readData(`${type}-${id}`);
+                        if (type === 'app-state-sync-key' && value) {
+                            value = proto.Message.AppStateSyncKeyData.fromObject(value);
                         }
-                    });
+                        data[id] = value;
+                    }));
                     return data;
                 },
-                set: (data) => {
+                set: async (data) => {
                     for (const type in data) {
-                        keys[type] = keys[type] || {};
-                        Object.assign(keys[type], data[type]);
+                        for (const id in data[type]) {
+                            const value = data[type][id];
+                            value ? await writeData(value, `${type}-${id}`) : await removeData(`${type}-${id}`);
+                        }
                     }
-                    saveCreds();
                 }
             }
         },
-        saveCreds
+        saveCreds: () => writeData(creds, 'creds')
     };
 }
 
 async function connectToWhatsApp() {
     try {
-        console.log(`[WA] 🛠️ تهيئة المقبس...`);
-        const { state, saveCreds } = await usePostgresAuthState(storeId);
+        console.log(`[WA] 🛠️ تهيئة المقبس بالنسخة الأحدث...`);
+        const { state, saveCreds } = await useAtomicAuthState(storeId);
+        
+        // جلب نسخة واتساب المدعومة حالياً لمنع الحظر أو التعليق
+        const { version } = await fetchLatestBaileysVersion();
 
         const sock = makeWASocket({
+            version,
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: "silent" }),
-            browser: ["Jaddahh", "Chrome", "1.0.0"],
-            syncFullHistory: false,
+            browser: ["Jaddahh Bot", "Chrome", "1.1.0"],
+            syncFullHistory: false, // لتقليل استهلاك الذاكرة في Render
         });
 
         // دعم كود الربط
@@ -107,21 +136,19 @@ async function connectToWhatsApp() {
             const { connection, lastDisconnect, qr } = update;
             if (qr) {
                 console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
-                console.log(`[QR] ✅ تم توليد الباركود.`);
             }
             if (connection === "close") {
                 const statusCode = (lastDisconnect?.error instanceof Boom)?.output?.statusCode;
                 if (statusCode !== DisconnectReason.loggedOut) {
-                    console.log(`[RECONNECT] 🔄 إعادة الاتصال...`);
+                    console.log(`[RECONNECT] 🔄 إعادة المحاولة خلال 5 ثوانٍ...`);
                     setTimeout(() => connectToWhatsApp(), 5000);
                 }
             } else if (connection === "open") {
-                console.log(`[WA_READY] 🎉 الجلسة نشطة!`);
-                console.log(`SESSION_OPENED`);
+                console.log(`[WA_READY] 🎉 SESSION_OPENED`);
             }
         });
 
-        // معالجة الأوامر من Python (إرسال الرسائل)
+        // استقبال أوامر الإرسال من Python
         process.stdin.on("data", async (data) => {
             const input = data.toString().trim();
             if (input.startsWith("SEND:")) {
@@ -135,7 +162,7 @@ async function connectToWhatsApp() {
             }
         });
 
-        // استقبال الرسائل
+        // تمرير الرسائل الواردة لـ Python
         sock.ev.on("messages.upsert", async (m) => {
             if (m.type !== "notify") return;
             for (const msg of m.messages) {
@@ -148,8 +175,9 @@ async function connectToWhatsApp() {
         });
 
     } catch (err) {
-        console.error(`[CRITICAL_ERROR] 💥: ${err.message}`);
+        console.error(`[CRITICAL_ERROR] 💥 انهيار الجسر: ${err.message}`);
+        process.exit(1); // إغلاق لإجبار النظام على البدء من نظيف
     }
 }
 
-connectToWhatsApp().catch(err => console.error(err));
+connectToWhatsApp();
