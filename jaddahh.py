@@ -1059,21 +1059,32 @@ async def cron_scheduler():
 # تحديث دالة بدء التطبيق لتشغيل المجدل
 @app.on_event("startup")
 async def create_whatsapp_table():
+    # تعديل الاستعلام ليتوافق مع wa-bridge.js
     query = """
     CREATE TABLE IF NOT EXISTS whatsapp_sessions (
-        id TEXT PRIMARY KEY,
-        data JSONB NOT NULL
+        store_id TEXT PRIMARY KEY,
+        creds TEXT,
+        keys TEXT
     );
     """
-    execute_db_query(query)
-    logger.info("📡 تم التأكد من وجود جدول جلسات الواتساب في Supabase")
+    try:
+        execute_db_query(query)
+        logger.info("📡 تم تحديث هيكلية جدول whatsapp_sessions بنجاح")
+    except Exception as e:
+        logger.error(f"❌ خطأ في إنشاء جدول الجلسات: {e}")
+
 async def startup_event():
-    # 1. تشغيل عامل إرسال الرسائل (مهم جداً لمعالجة الطابور)
+    # 1. التأكد من الجدول أولاً
+    await create_whatsapp_table()
+    
+    # 2. تشغيل العمال (Workers)
     asyncio.create_task(message_worker())
     
-    # 2. تشغيل مجدول السلال المتروكة
+    # 3. تشغيل مجدول السلال المتروكة
     asyncio.create_task(cron_scheduler())
     
+    logger.info("🚀 تم تشغيل جميع المهام الخلفية بنجاح")
+
     # 3. إزالة استدعاء ensure_browser_ready العام
     # السبب: الدالة الآن تتطلب store_id لفتح الجلسة من قاعدة البيانات.
     # المتصفح سيفتح تلقائياً "عند الحاجة" (On Demand) بمجرد وصول أول رسالة أو طلب إرسال.
