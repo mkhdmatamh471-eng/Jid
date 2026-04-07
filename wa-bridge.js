@@ -1,46 +1,45 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, initAuthCreds, BufferJSON } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, DisconnectReason, initAuthCreds, BufferJSON, proto } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const pino = require("pino");
 const { Client } = require("pg");
 
 const storeId = process.argv[2] || "default";
 
-// إعداد الاتصال بقاعدة البيانات
 const dbClient = new Client({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false } 
 });
 
 /**
- * دالة متقدمة لإدارة الجلسة عبر PostgreSQL مع دعم كامل للـ Binary Data
+ * محرك إدارة الجلسة المطور لـ PostgreSQL
  */
 async function usePostgresAuthState(storeId) {
     try {
         if (!dbClient._connected) await dbClient.connect();
     } catch (e) {
-        console.error("DATABASE_CONNECTION_ERROR:", e.message);
+        console.error("DB_CONNECTION_ERROR:", e.message);
     }
 
-    // إنشاء الجدول وتفعيل JSONB لسرعة الاستعلام
+    // إنشاء الجدول إذا لم يوجد
     await dbClient.query(`
         CREATE TABLE IF NOT EXISTS whatsapp_sessions (
             store_id TEXT PRIMARY KEY,
-            creds JSONB,
-            keys JSONB
+            creds TEXT,
+            keys TEXT
         );
     `);
 
+    // جلب البيانات الحالية
     const res = await dbClient.query("SELECT creds, keys FROM whatsapp_sessions WHERE store_id = $1", [storeId]);
     
-    // استخدام BufferJSON.reviver لتحويل النصوص إلى Buffers عند القراءة
-    let creds = res.rows[0]?.creds ? JSON.parse(JSON.stringify(res.rows[0].creds), BufferJSON.reviver) : initAuthCreds();
-    let keys = res.rows[0]?.keys ? JSON.parse(JSON.stringify(res.rows[0].keys), BufferJSON.reviver) : {};
+    // تحويل البيانات من نص (JSON) إلى كائنات تدعم الـ Buffers
+    let creds = res.rows[0]?.creds ? JSON.parse(res.rows[0].creds, BufferJSON.reviver) : initAuthCreds();
+    let keys = res.rows[0]?.keys ? JSON.parse(res.rows[0].keys, BufferJSON.reviver) : {};
 
     const saveCreds = async () => {
-        // استخدام BufferJSON.replacer لتحويل الـ Buffers إلى نصوص عند الحفظ
         const credsJSON = JSON.stringify(creds, BufferJSON.replacer);
         const keysJSON = JSON.stringify(keys, BufferJSON.replacer);
-        
+
         await dbClient.query(`
             INSERT INTO whatsapp_sessions (store_id, creds, keys)
             VALUES ($1, $2, $3)
@@ -57,9 +56,8 @@ async function usePostgresAuthState(storeId) {
                     ids.forEach(id => {
                         let value = keys[type]?.[id];
                         if (value) {
-                            // إعادة بناء الـ Buffer إذا لزم الأمر
-                            if (type === 'app-state-sync-key' && value) {
-                                value = JSON.parse(JSON.stringify(value), BufferJSON.reviver);
+                            if (type === 'app-state-sync-key') {
+                                value = proto.Message.AppStateSyncKeyData.fromObject(value);
                             }
                             data[id] = value;
                         }
@@ -71,7 +69,7 @@ async function usePostgresAuthState(storeId) {
                         keys[type] = keys[type] || {};
                         Object.assign(keys[type], data[type]);
                     }
-                    saveCreds();
+                    saveCreds(); // حفظ تلقائي عند تحديث المفاتيح
                 }
             }
         },
@@ -85,63 +83,74 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: "silent" }),
-        browser: ["Salla AI Bot", "Chrome", "1.0.0"],
-        // تحسين لتقليل استهلاك الذاكرة في Render
-        patchMessageBeforeSending: (message) => {
-            const requiresPatch = !!(message.buttonsMessage || message.templateMessage || message.listMessage);
-            if (requiresPatch) {
-                message = { viewOnceMessage: { message: { messageContextInfo: { deviceListMetadataVersion: 2, deviceListMetadata: {}, }, ...message } } };
-            }
-            return message;
-        }
+        logger: pino({ level: "error" }), // تقليل السجلات لعدم ملء مساحة الرام
+        browser: ["Jaddahh Bot", "Chrome", "1.0.0"],
+        syncFullHistory: false, // تعطيل مزامنة السجل الكامل لتوفير البيانات والرام
     });
 
+    // تحديث الـ Creds عند الضرورة
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
+
         if (qr) console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
 
         if (connection === "close") {
-            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            const statusCode = (lastDisconnect.error instanceof Boom)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            
+            console.log(`CONNECTION_CLOSED: Reason ${statusCode}, Reconnecting: ${shouldReconnect}`);
+            
             if (shouldReconnect) {
-                console.log("RECONNECTING...");
-                connectToWhatsApp();
+                setTimeout(() => connectToWhatsApp(), 5000); // تأخير بسيط قبل إعادة المحاولة
+            } else {
+                console.log("SESSION_TERMINATED: User logged out.");
             }
         } else if (connection === "open") {
             console.log("SESSION_OPENED");
         }
     });
 
-    // معالجة الأوامر من بايثون
+    // استقبال الأوامر من Python (إرسال رسائل)
     process.stdin.on("data", async (data) => {
-        const str = data.toString().trim();
-        if (str.startsWith("SEND:")) {
+        const input = data.toString().trim();
+        if (input.startsWith("SEND:")) {
             try {
-                const parts = str.split(":");
-                const payload = parts.slice(2).join(":"); // لضمان عدم ضياع الرسالة لو بها ":"
-                const [phone, message] = payload.split("|");
+                // التنسيق المتوقع SEND:رقم_الهاتف|نص_الرسالة
+                const payload = input.substring(5);
+                const [phone, ...messageParts] = payload.split("|");
+                const message = messageParts.join("|");
+
                 await sock.sendMessage(`${phone}@s.whatsapp.net`, { text: message });
                 console.log(`SENT_CONFIRMATION:${phone}`);
             } catch (e) {
-                console.log(`SEND_ERROR:${e.message}`);
+                console.error(`SEND_ERROR:${e.message}`);
             }
         }
     });
 
-    // معالجة الرسائل الواردة
+    // مراقبة الرسائل الواردة وإرسالها لـ Python
     sock.ev.on("messages.upsert", async (m) => {
-        const msg = m.messages[0];
-        if (!msg.key.fromMe && m.type === "notify") {
-            const sender = msg.key.remoteJid.split("@")[0];
-            const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
-            if (text) console.log(`NEW_MSG|${sender}|${text}`);
+        if (m.type !== "notify") return;
+        
+        for (const msg of m.messages) {
+            if (!msg.key.fromMe && msg.message) {
+                const sender = msg.key.remoteJid.split("@")[0];
+                const text = msg.message.conversation || 
+                             msg.message.extendedTextMessage?.text || 
+                             msg.message.buttonsResponseMessage?.selectedButtonId;
+
+                if (text) {
+                    // إرسال النص لـ Python للمعالجة عبر الذكاء الاصطناعي
+                    console.log(`NEW_MSG|${sender}|${text}`);
+                }
+            }
         }
     });
 }
 
+// تشغيل البوت مع معالجة الأخطاء القاتلة
 connectToWhatsApp().catch(err => {
-    console.error("CRITICAL_NODE_ERROR:", err.message);
+    console.error("CRITICAL_BRIDGE_ERROR:", err);
 });
