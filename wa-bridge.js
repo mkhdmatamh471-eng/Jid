@@ -1,3 +1,4 @@
+console.log("DEBUG: Script started, checking DB connection...");
 const { 
     default: makeWASocket, 
     DisconnectReason, 
