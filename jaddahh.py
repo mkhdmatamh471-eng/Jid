@@ -7,9 +7,6 @@ import json
 import qrcode
 import shutil
 import qrcode
-import base64
-from io import BytesIO
-import base64
 from io import BytesIO
 import json
 import logging
@@ -86,90 +83,6 @@ SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 # --- 2. دوال توليد الباركود ونظام الجسر (الجديدة) ---
 # ========================================================
 
-def text_to_base64_qr(qr_text: str):
-    try:
-        qr = qrcode.QRCode(version=1, box_size=10, border=4)
-        qr.add_data(qr_text)
-        qr.make(fit=True)
-
-        img = qr.make_image(fill_color="black", back_color="white")
-        buffered = BytesIO()
-        img.save(buffered, format="PNG")
-        
-        # استخدام .strip() للتأكد من عدم وجود مسافات زائدة
-        img_str = base64.b64encode(buffered.getvalue()).decode().strip()
-        return f"data:image/png;base64,{img_str}"
-    except Exception as e:
-        logger.error(f"❌ Error: {e}")
-        return None
-
-async def get_qr_from_bridge(store_id):
-    logger.info(f"🚀 تشغيل الجسر للمتجر: {store_id} باستخدام Supabase")
-    
-    # تأكد من جلب رابط القاعدة من متغيرات البيئة
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.error("❌ DATABASE_URL missing!")
-        return None
-
-    env_vars = os.environ.copy()
-    env_vars["DATABASE_URL"] = db_url.replace("postgres://", "postgresql://", 1)
-
-    process = None
-    try:
-        process = await asyncio.create_subprocess_exec(
-            'node', 'wa-bridge.js', store_id,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env_vars 
-        )
-        
-        start_time = time.time()
-        while time.time() - start_time < 60:
-            line = await process.stdout.readline()
-            if not line: break
-            
-            line_decode = line.decode().strip()
-            
-            # إذا أرسل Node بيانات الباركود
-            if "QR_DATA_START:" in line_decode:
-                raw_qr = line_decode.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
-                return text_to_base64_qr(raw_qr)
-
-            # إذا وجد Node جلسة قديمة في Supabase وفتحها
-            if "SESSION_OPENED" in line_decode:
-                logger.info(f"✅ تم استعادة الجلسة بنجاح من Supabase للمتجر {store_id}")
-                return "CONNECTED"
-
-    except Exception as e:
-        logger.error(f"❌ خطأ في الجسر: {str(e)}")
-    return None
-
-# ========================================================
-# --- 3. روابط الـ API (Endpoints) ---
-# ========================================================
-
-@app.get("/api/whatsapp/get-qr/{store_id}")
-async def fetch_qr(store_id: str):
-    """الرابط الذي تستدعيه لوحة التحكم لعرض الباركود"""
-    base64_qr = await get_qr_from_bridge(store_id)
-    
-    if base64_qr == "CONNECTED":
-        return {"status": "success", "message": "المتجر متصل بالفعل ✅", "code": 200}
-    
-    if base64_qr:
-        return {
-            "status": "qr_ready",
-            "qr_image": base64_qr,
-            "message": "تم توليد الباركود بنجاح"
-        }
-    
-    return {"status": "error", "message": "فشل في توليد الباركود، حاول مجدداً"}
-
-# ... بقية الدوال الخاصة بك (get_db_connection, execute_db_query, salla_request, etc.) ...
-# [ملاحظة: تأكد من إبقاء بقية الكود كما هو بالأسفل]
-
-# --- قسم Baileys الجديد ---
 class BaileysDirectHandler:
     def __init__(self, store_id: str):
         self.store_id = store_id
@@ -225,10 +138,7 @@ async def get_handler_for_store(store_id: str):
     return BaileysDirectHandler(store_id)
 
 def execute_db_query(query: str, params: dict = None, fetch: str = None):
-    """
-    نسخة احترافية تدعم التراجع التلقائي في حال الخطأ (Rollback)
-    وتوافق مع SQLAlchemy 2.0
-    """
+
     try:
         with engine.connect() as connection:
             # استخدام begin لضمان تنفيذ العملية ككتلة واحدة (Transaction)
@@ -247,6 +157,117 @@ def execute_db_query(query: str, params: dict = None, fetch: str = None):
         # رفع الخطأ ضروري لكي تظهر تفاصيله في سجلات Render
         raise e
         
+def text_to_base64_qr(qr_text: str):
+    try:
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(qr_text)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        
+        # استخدام .strip() للتأكد من عدم وجود مسافات زائدة
+        img_str = base64.b64encode(buffered.getvalue()).decode().strip()
+        return f"data:image/png;base64,{img_str}"
+    except Exception as e:
+        logger.error(f"❌ Error: {e}")
+        return None
+
+async def get_qr_from_bridge(store_id):
+    logger.info(f"🚀 بدء محاولة توليد الباركود للمتجر: {store_id}")
+    
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logger.error("❌ DATABASE_URL missing!")
+        return None
+
+    env_vars = os.environ.copy()
+    # تأكد من أن الرابط يبدأ بـ postgresql ليتوافق مع مكتبة pg في Node
+    if db_url.startswith("postgres://"):
+        env_vars["DATABASE_URL"] = db_url.replace("postgres://", "postgresql://", 1)
+
+    process = None
+    try:
+        # تشغيل الجسر
+        process = await asyncio.create_subprocess_exec(
+            'node', 'wa-bridge.js', store_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env_vars 
+        )
+        
+        start_time = time.time()
+        # مهلة 60 ثانية للحصول على الباركود
+        while time.time() - start_time < 60:
+            # قراءة السطر من stdout
+            line = await process.stdout.readline()
+            if not line:
+                # إذا انتهى السطر ولم نجد شيئاً، نفحص أخطاء stderr
+                error_output = await process.stderr.read()
+                if error_output:
+                    logger.error(f"❌ Node Error Output: {error_output.decode()}")
+                break
+            
+            line_decode = line.decode().strip()
+            # طباعة اللوج القادم من Node في سجلات ريندر للمتابعة
+            if "[DB]" in line_decode or "[WA]" in line_decode:
+                logger.info(f"🖥️ [Node-Bridge]: {line_decode}")
+
+            # 1. حالة وجود باركود
+            if "QR_DATA_START:" in line_decode:
+                raw_qr = line_decode.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
+                logger.info(f"✅ تم التقاط QR للمتجر {store_id}")
+                
+                # إغلاق العملية بعد الحصول على الباركود بنجاح
+                try: process.terminate() 
+                except: pass
+                
+                return text_to_base64_qr(raw_qr)
+
+            # 2. حالة المتجر متصل أصلاً
+            if "SESSION_OPENED" in line_decode or "[WA_READY]" in line_decode:
+                logger.info(f"✅ المتجر {store_id} متصل بالفعل.")
+                try: process.terminate()
+                except: pass
+                return "CONNECTED"
+
+    except Exception as e:
+        logger.error(f"❌ خطأ غير متوقع في دالة الجسر: {str(e)}")
+    finally:
+        # ضمان إغلاق العملية في كل الأحوال
+        if process and process.returncode is None:
+            try: process.terminate()
+            except: pass
+            
+    return None
+# ========================================================
+# --- 3. روابط الـ API (Endpoints) ---
+# ========================================================
+
+@app.get("/api/whatsapp/get-qr/{store_id}")
+async def fetch_qr(store_id: str):
+    """الرابط الذي تستدعيه لوحة التحكم لعرض الباركود"""
+    base64_qr = await get_qr_from_bridge(store_id)
+    
+    if base64_qr == "CONNECTED":
+        return {"status": "success", "message": "المتجر متصل بالفعل ✅", "code": 200}
+    
+    if base64_qr:
+        return {
+            "status": "qr_ready",
+            "qr_image": base64_qr,
+            "message": "تم توليد الباركود بنجاح"
+        }
+    
+    return {"status": "error", "message": "فشل في توليد الباركود، حاول مجدداً"}
+
+# ... بقية الدوال الخاصة بك (get_db_connection, execute_db_query, salla_request, etc.) ...
+# [ملاحظة: تأكد من إبقاء بقية الكود كما هو بالأسفل]
+
+# --- قسم Baileys الجديد ---
+
+
 async def message_worker():
     while True:
         # الآن الـ Queue يستقبل 3 قيم
