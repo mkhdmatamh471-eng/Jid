@@ -8,46 +8,52 @@ const {
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const pino = require("pino");
-const { Client } = require("pg");
+const { Pool } = require("pg"); // تم التغيير من Client إلى Pool
 
 const storeId = process.argv[2] || "default";
 const phoneNumber = process.argv[3];
 
-console.log(`[START] 🚀 بدء تشغيل الجسر بنظام Atomic (منطق كود الاختبار) للمتجر: ${storeId}`);
-
-// إعداد الاتصال بـ Supabase
-const dbClient = new Client({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false } 
-});
+console.log(`[START] 🚀 بدء تشغيل الجسر الذري للمتجر: ${storeId}`);
 
 /**
- * 2. دالة إدارة الجلسة (نفس منطق كود الاختبار)
+ * 1. إعداد الـ Pool (اتصال واحد مستدام)
+ * الـ Pool يمنع تكرار فتح الاتصال في كل عملية query
+ */
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 1, // اتصال واحد فقط لكل عملية جسر
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+});
+
+// متغير لمتابعة حالة الاتصال بالقاعدة مرة واحدة فقط في السجلات
+let isDbConnected = false;
+
+/**
+ * 2. دالة إدارة الجلسة (منطق كود الاختبار مع تحسين الـ Pool)
  */
 async function usePostgresAuthState(sessionId) {
-    try {
-        if (!dbClient._connected) await dbClient.connect();
-        console.log(`[DB] ✅ متصل بـ Supabase.`);
-    } catch (e) {
-        console.error(`[DB_ERROR] ❌ فشل الاتصال: ${e.message}`);
-    }
-
+    
     const writeData = async (data, id) => {
         try {
             const jsonStr = JSON.stringify(data, BufferJSON.replacer);
-            // لاحظ استخدام sessionId + id لإنشاء مفتاح فريد لكل قطعة بيانات
-            await dbClient.query(
+            await pool.query(
                 "INSERT INTO whatsapp_sessions (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = $2",
                 [`${sessionId}_${id}`, jsonStr]
             );
         } catch (err) {
-            console.error(`[WRITE_ERR] ❌ فشل حفظ ${id}:`, err.message);
+            console.error(`[DB_WRITE_ERR] ❌: ${err.message}`);
         }
     };
 
     const readData = async (id) => {
         try {
-            const res = await dbClient.query("SELECT data FROM whatsapp_sessions WHERE id = $1", [`${sessionId}_${id}`]);
+            const res = await pool.query("SELECT data FROM whatsapp_sessions WHERE id = $1", [`${sessionId}_${id}`]);
+            if (!isDbConnected) {
+                console.log(`[DB] ✅ متصل بـ Supabase.`);
+                isDbConnected = true;
+            }
             return res.rows.length > 0 ? JSON.parse(JSON.stringify(res.rows[0].data), BufferJSON.reviver) : null;
         } catch (err) {
             return null;
@@ -55,7 +61,7 @@ async function usePostgresAuthState(sessionId) {
     };
 
     const removeData = async (id) => {
-        await dbClient.query("DELETE FROM whatsapp_sessions WHERE id = $1", [`${sessionId}_${id}`]);
+        await pool.query("DELETE FROM whatsapp_sessions WHERE id = $1", [`${sessionId}_${id}`]);
     };
 
     const creds = await readData('creds') || initAuthCreds();
@@ -95,20 +101,22 @@ async function usePostgresAuthState(sessionId) {
 async function connectToWhatsApp() {
     try {
         console.log(`[WA] 🛠️ تهيئة المقبس...`);
-        // نستخدم storeId كـ sessionId للجلسة
         const { state, saveCreds } = await usePostgresAuthState(storeId);
+        
+        // جلب النسخة لمرة واحدة
         const { version } = await fetchLatestBaileysVersion();
 
         const sock = makeWASocket({
             version,
             auth: state,
             logger: pino({ level: "silent" }),
-            browser: ["Jaddahh Dashboard", "Chrome", "20.0.04"],
+            browser: ["Jaddahh Dev", "Chrome", "1.1.0"],
             printQRInTerminal: false,
-            syncFullHistory: false
+            syncFullHistory: false,
+            connectTimeoutMs: 60000, // مهلة أطول للاتصالات الضعيفة
         });
 
-        // طلب كود الربط إذا وجد رقم هاتف
+        // طلب كود الربط
         if (!sock.authState.creds.registered && phoneNumber) {
             console.log(`[PAIRING] 🔑 طلب كود للرقم: ${phoneNumber}`);
             setTimeout(async () => {
@@ -118,7 +126,7 @@ async function connectToWhatsApp() {
                 } catch (err) {
                     console.error(`[PAIRING_ERROR] ❌: ${err.message}`);
                 }
-            }, 5000);
+            }, 10000); // زيادة المهلة لضمان استقرار الاتصال بالقاعدة أولاً
         }
 
         sock.ev.on("creds.update", saveCreds);
@@ -126,17 +134,15 @@ async function connectToWhatsApp() {
         sock.ev.on("connection.update", (update) => {
             const { connection, lastDisconnect, qr } = update;
 
-            if (qr) {
-                console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
-            }
+            if (qr) console.log(`QR_DATA_START:${qr}:QR_DATA_END`);
 
             if (connection === "close") {
                 const statusCode = (lastDisconnect?.error instanceof Boom)?.output?.statusCode;
                 if (statusCode === 401) {
-                    console.log(`[LOGOUT] 🗑️ الجلسة تالفة، جاري المسح...`);
-                    dbClient.query("DELETE FROM whatsapp_sessions WHERE id LIKE $1", [`${storeId}_%`]);
+                    console.log(`[LOGOUT] 🗑️ مسح الجلسة التالفة...`);
+                    pool.query("DELETE FROM whatsapp_sessions WHERE id LIKE $1", [`${storeId}_%`]);
                 } else if (statusCode !== DisconnectReason.loggedOut) {
-                    console.log(`[RECONNECT] 🔄 إعادة محاولة الاتصال...`);
+                    console.log(`[RECONNECT] 🔄 إعادة المحاولة...`);
                     setTimeout(() => connectToWhatsApp(), 5000);
                 }
             } else if (connection === "open") {
@@ -144,7 +150,7 @@ async function connectToWhatsApp() {
             }
         });
 
-        // معالجة التواصل مع بايثون (نفس الكود السابق)
+        // معالجة المدخلات من بايثون
         process.stdin.on("data", async (data) => {
             const input = data.toString().trim();
             if (input.startsWith("SEND:")) {
@@ -156,6 +162,7 @@ async function connectToWhatsApp() {
             }
         });
 
+        // رصد الرسائل الواردة
         sock.ev.on("messages.upsert", async (m) => {
             if (m.type !== "notify") return;
             for (const msg of m.messages) {
@@ -168,7 +175,7 @@ async function connectToWhatsApp() {
         });
 
     } catch (err) {
-        console.error(`[CRITICAL] 💥: ${err.message}`);
+        console.error(`[FATAL] 💥: ${err.message}`);
         process.exit(1);
     }
 }
