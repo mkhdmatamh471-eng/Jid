@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>لوحة تحكم بوت سلة الذكي | AI Dashboard</title>
-    
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
+
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
@@ -40,7 +40,7 @@
             position: relative;
             overflow: hidden;
         }
-        
+
         .number-update { animation: pulse-green 1.5s cubic-bezier(0.4, 0, 0.6, 1); }
         @keyframes pulse-green {
             0%, 100% { color: inherit; transform: scale(1); }
@@ -69,13 +69,13 @@
             0% { background-position: 200% 0; }
             100% { background-position: -200% 0; }
         }
-        
+
         .fade-in { animation: fadeIn 0.8s ease-in-out; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        
+
         .event-slide-in {
             animation: slideInRight 0.5s ease-out forwards;
         }
@@ -188,7 +188,7 @@
         <div class="space-y-8">
             <div class="glass-card p-6 rounded-3xl border border-gray-100 text-center">
                 <h3 class="text-lg font-bold mb-4">ربط واتساب مباشر 📱</h3>
-                
+
                 <div class="flex bg-gray-100 rounded-lg p-1 mb-6">
                     <button id="tabQr" onclick="switchLinkMode('qr')" class="flex-1 py-2 text-sm font-bold rounded-md bg-white shadow-sm text-gray-900 transition">باركود (QR)</button>
                     <button id="tabCode" onclick="switchLinkMode('code')" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-500 hover:text-gray-900 transition">كود الربط</button>
@@ -221,7 +221,7 @@
                         <label class="block text-xs font-semibold text-gray-700 mb-1">رقم الواتساب مع رمز الدولة</label>
                         <input type="text" id="waPairingPhone" placeholder="9665xxxxxxxx" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-left" dir="ltr">
                     </div>
-                    
+
                     <button onclick="requestPairingCode()" id="btnPairing" class="w-full py-3 mb-4 text-green-600 text-sm font-bold border border-green-100 bg-green-50 rounded-xl hover:bg-green-100 transition shadow-sm">
                         طلب كود الربط 🔑
                     </button>
@@ -355,7 +355,7 @@ function switchLinkMode(mode) {
         tabQr.classList.replace('text-gray-500', 'text-gray-900');
         tabQr.classList.replace('bg-transparent', 'bg-white');
         tabQr.classList.add('shadow-sm');
-        
+
         tabCode.classList.replace('text-gray-900', 'text-gray-500');
         tabCode.classList.remove('bg-white', 'shadow-sm');
 
@@ -365,7 +365,7 @@ function switchLinkMode(mode) {
         tabCode.classList.replace('text-gray-500', 'text-gray-900');
         tabCode.classList.replace('bg-transparent', 'bg-white');
         tabCode.classList.add('shadow-sm');
-        
+
         tabQr.classList.replace('text-gray-900', 'text-gray-500');
         tabQr.classList.remove('bg-white', 'shadow-sm');
 
@@ -379,44 +379,45 @@ async function refreshQR() {
     console.log("🟢 [FRONTEND] بدء طلب توليد الباركود...");
     const qrImage = document.getElementById('qr-image');
     const qrBox = document.getElementById('qr-box');
-    
-    // تأثير بصري أثناء التحميل
+    const qrLoader = document.getElementById('qr-loader'); // تأكد من وجود هذا الـ ID في الـ HTML
+
+    // 1. إظهار حالة التحميل
+    qrLoader.classList.remove('hidden');
+    qrImage.style.opacity = "0.2";
     qrBox.classList.add("animate-pulse");
-    qrImage.style.filter = "blur(5px)";
-    qrImage.style.opacity = "0.5";
-    
+
     try {
-        // نرسل الطلب للرابط الجديد الذي أعددته في البايثون
+        // نرسل الطلب للسيرفر
         const response = await fetch(`/api/whatsapp/get-qr/${storeId}`);
         const data = await response.json();
 
+        console.log("📥 رد السيرفر:", data);
+
         if (data.status === "qr_ready" && data.qr_image) {
-            // تحديث الصورة بـ Base64 المستلم
+            // تحديث الصورة (data.qr_image يحتوي بالفعل على data:image/png;base64,...)
             qrImage.src = data.qr_image;
-            qrImage.style.filter = "none";
             qrImage.style.opacity = "1";
             showToast("✅ تم توليد الباركود بنجاح");
-            console.log("📸 QR Image Updated (Base64)");
         } 
-        else if (data.message && data.message.includes("متصل بالفعل")) {
-            // حالة المتجر متصل
+        else if (data.status === "success" || (data.message && data.message.includes("متصل"))) {
+            // حالة أن المتجر متصل أصلاً
             qrImage.src = "https://img.icons8.com/fluency/200/approved-and-checked.png";
-            qrImage.style.filter = "none";
             qrImage.style.opacity = "1";
-            showToast("✅ المتجر متصل بالفعل بالواتساب");
+            showToast("✅ المتجر متصل بالفعل");
         } 
         else {
-            // حالات الخطأ الأخرى
-            showToast(`⚠️ ${data.message || "حاول مجدداً خلال ثوانٍ"}`, false);
+            // في حال فشل التوليد (مثلاً مهلة انتهت)
+            showToast(`⚠️ ${data.message || "فشل توليد الكود، حاول مرة أخرى"}`, false);
         }
     } catch (err) {
-        console.error("❌ Error fetching QR:", err);
-        showToast("❌ فشل الاتصال بالسيرفر", false);
+        console.error("❌ خطأ في الاتصال:", err);
+        showToast("❌ فشل الاتصال بالسيرفر، تأكد من أن السيرفر يعمل", false);
     } finally {
+        // إيقاف حالة التحميل
+        qrLoader.classList.add('hidden');
         qrBox.classList.remove("animate-pulse");
     }
 }
-
 
 // 2. دالة كود الربط
 async function requestPairingCode() {
@@ -450,7 +451,7 @@ async function requestPairingCode() {
             const msg = errorData.response?.message?.[0] || errorData.message || "فشل غير معروف";
             throw new Error(msg);
         }
-        
+
         const data = await response.json();
         console.log(`📦 [FRONTEND] البيانات المستلمة:`, data);
 
@@ -505,7 +506,7 @@ async function sendTestMessage() {
             ${msg}
         </div>
     `);
-    
+
     input.value = '';
     btn.disabled = true;
     document.getElementById('testBtnText').innerText = "...";
