@@ -104,20 +104,19 @@ def text_to_base64_qr(qr_text: str):
         return None
 
 async def get_qr_from_bridge(store_id):
-    """تشغيل Node.js وتمرير رابط قاعدة البيانات للربط المباشر"""
-    logger.info(f"🚀 [STEP 1] Starting Bridge for Store: {store_id}...")
+    logger.info(f"🚀 تشغيل الجسر للمتجر: {store_id} باستخدام Supabase")
     
-    # 1. نسخ متغيرات البيئة (بما فيها DATABASE_URL المعرف في Render)
+    # تأكد من جلب رابط القاعدة من متغيرات البيئة
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logger.error("❌ DATABASE_URL missing!")
+        return None
+
     env_vars = os.environ.copy()
-    
-    # تأكد أن الرابط يبدأ بـ postgresql:// (تصحيح تلقائي إذا كان من Render)
-    db_url = env_vars.get("DATABASE_URL", "")
-    if db_url.startswith("postgres://"):
-        env_vars["DATABASE_URL"] = db_url.replace("postgres://", "postgresql://", 1)
+    env_vars["DATABASE_URL"] = db_url.replace("postgres://", "postgresql://", 1)
 
     process = None
     try:
-        # 2. تشغيل Node.js مع تمرير env_vars
         process = await asyncio.create_subprocess_exec(
             'node', 'wa-bridge.js', store_id,
             stdout=asyncio.subprocess.PIPE,
@@ -125,45 +124,26 @@ async def get_qr_from_bridge(store_id):
             env=env_vars 
         )
         
-        logger.info(f"📡 [STEP 2] Node.js started (PID: {process.pid})")
-
         start_time = time.time()
-        # مهلة 60 ثانية لضمان وقت كافٍ للاتصال بالقاعدة والواتساب
         while time.time() - start_time < 60:
             line = await process.stdout.readline()
-            if not line:
-                break
+            if not line: break
             
             line_decode = line.decode().strip()
-            if line_decode:
-                logger.info(f"🖥️ [NODE_LOG]: {line_decode}")
             
-            # حالة 1: استلام QR جديد (لم يسبق له الربط)
+            # إذا أرسل Node بيانات الباركود
             if "QR_DATA_START:" in line_decode:
                 raw_qr = line_decode.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
-                base64_image = text_to_base64_qr(raw_qr)
-                # لا نغلق العملية فوراً، نتركها قليلاً لتكمل المزامنة إذا لزم الأمر
-                return base64_image
+                return text_to_base64_qr(raw_qr)
 
-            # حالة 2: تم استعادة الجلسة بنجاح من PostgreSQL
-            if "SESSION_RESTORED_FROM_DB" in line_decode or "SESSION_OPENED" in line_decode:
-                logger.info(f"✅ [SUCCESS] Store {store_id} is connected via PostgreSQL session.")
+            # إذا وجد Node جلسة قديمة في Supabase وفتحها
+            if "SESSION_OPENED" in line_decode:
+                logger.info(f"✅ تم استعادة الجلسة بنجاح من Supabase للمتجر {store_id}")
                 return "CONNECTED"
 
-            # حالة 3: فشل في الاتصال بالقاعدة من جهة Node
-            if "DB_CONNECTION_ERROR" in line_decode:
-                logger.error(f"❌ [DB_ERROR] Node.js failed to connect to Postgres")
-
     except Exception as e:
-        logger.error(f"❌ [CRITICAL] Bridge Exception: {str(e)}")
-    finally:
-        if process and process.returncode is None:
-            try:
-                process.terminate()
-            except:
-                pass
+        logger.error(f"❌ خطأ في الجسر: {str(e)}")
     return None
-
 
 # ========================================================
 # --- 3. روابط الـ API (Endpoints) ---
@@ -1078,6 +1058,15 @@ async def cron_scheduler():
         await asyncio.sleep(3600)
 # تحديث دالة بدء التطبيق لتشغيل المجدل
 @app.on_event("startup")
+async def create_whatsapp_table():
+    query = """
+    CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL
+    );
+    """
+    execute_db_query(query)
+    logger.info("📡 تم التأكد من وجود جدول جلسات الواتساب في Supabase")
 async def startup_event():
     # 1. تشغيل عامل إرسال الرسائل (مهم جداً لمعالجة الطابور)
     asyncio.create_task(message_worker())
