@@ -1597,69 +1597,66 @@ async def fetch_qr(store_id: str):
 # 2. دالة كود الربط (Pairing Code)
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
+    # 1. تنظيف الرقم
     clean_phone = "".join(filter(str.isdigit, phone))
-    instance_id = f"{store_id}_{clean_phone[-4:]}"
-    print(f"\n{'='*50}\n📱 [BACKEND - PAIRING] بدء طلب كود ربط للجلسة: {instance_id}\n{'='*50}")
     
-    whatsapp_url = os.getenv("WHATSAPP_URL", "").rstrip("/")
-    api_key = os.getenv("WHATSAPP_API_KEY")
-    headers = {"apikey": api_key, "Content-Type": "application/json"}
-    
-    async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+    print(f"\n{'='*50}\n📱 [BACKEND] بدء طلب كود ربط للمتجر: {store_id}\n الرقم: {clean_phone}\n{'='*50}")
+
+    try:
+        # 2. تشغيل ملف wa-bridge.js كعملية فرعية (Subprocess)
+        # نمرر اسم المتجر ورقم الهاتف كمعاملات
+        process = await asyncio.create_subprocess_exec(
+            'node', 'wa-bridge.js', store_id, clean_phone,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        pairing_code = None
+        # 3. قراءة مخرجات Node.js للبحث عن الكود
+        # نضع مهلة زمنية (timeout) لكي لا يظل الطلب معلقاً
         try:
-            # --- الخطوة 1: الفحص ---
-            status_url = f"{whatsapp_url}/instance/connectionState/{instance_id}"
-            print(f"🔍 [1] فحص الجلسة: {status_url}")
-            status_resp = await client.get(status_url, headers=headers)
-            print(f"📥 [1] استجابة الفحص | الكود: {status_resp.status_code}")
-            
-            # --- الخطوة 2: الإنشاء ---
-            if status_resp.status_code == 404:
-                print(f"🏗️ [2] الجلسة غير موجودة. جاري الإنشاء للرقم: {clean_phone}")
-                create_payload = {
-                    "instanceName": instance_id,
-                    "token": api_key,
-                    "qrcode": False,
-                    "number": clean_phone,
-                    "integration": "WHATSAPP-BAILEYS"
-                }
-                create_url = f"{whatsapp_url}/instance/create"
-                print(f"📡 [2] بيانات الإنشاء: {create_payload}")
-                
-                create_resp = await client.post(create_url, json=create_payload, headers=headers)
-                print(f"📥 [2] استجابة الإنشاء | الكود: {create_resp.status_code} | النص: {create_resp.text}")
-                
-                if create_resp.status_code not in [200, 201]:
-                    return {"status": "error", "message": f"فشل الإنشاء (الخطأ {create_resp.status_code}): {create_resp.text}"}
-                
-                print("⏳ [2] ننتظر 5 ثوانٍ لتهيئة الجلسة برقم الهاتف...")
-                await asyncio.sleep(5.0)
+            async def read_output():
+                nonlocal pairing_code
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    
+                    line_decode = line.decode().strip()
+                    print(f"🖥️ [NODE_LOG]: {line_decode}") # للطباعة في ريندر
 
-            # --- الخطوة 3: طلب الكود ---
-            connect_url = f"{whatsapp_url}/instance/connect/{instance_id}?number={clean_phone}"
-            print(f"🔄 [3] جاري طلب كود الربط: {connect_url}")
-            qr_resp = await client.get(connect_url, headers=headers)
-            print(f"📥 [3] استجابة طلب الكود | الكود: {qr_resp.status_code}")
-            
-            if qr_resp.status_code == 200:
-                data = qr_resp.json()
-                pairing_code = data.get("code") or data.get("pairingCode")
-                if pairing_code:
-                    print(f"✅ [3] تم استلام كود الربط: {pairing_code}")
-                    return {
-                        "status": "success", 
-                        "pairing_code": pairing_code, 
-                        "instance_name": instance_id
-                    }
-                print(f"⚠️ [3] الكود غير متوفر في الرد: {data}")
-            else:
-                print(f"❌ [3] فشل طلب الكود | النص: {qr_resp.text}")
-            
-            return {"status": "error", "message": "فشل توليد الكود. قد تكون الجلسة مشغولة، جرب بعد ثوانٍ."}
+                    if "PAIRING_CODE_START:" in line_decode:
+                        pairing_code = line_decode.split("PAIRING_CODE_START:")[1].split(":PAIRING_CODE_END")[0]
+                        print(f"✅ تم التقاط كود الربط: {pairing_code}")
+                        break
+                    
+                    if "SESSION_OPENED" in line_decode:
+                        pairing_code = "ALREADY_CONNECTED"
+                        break
 
-        except Exception as e:
-            print(f"🚨 [خطأ استثنائي] {str(e)}")
-            return {"status": "error", "message": str(e)}
+            # ننتظر الكود لمدة 20 ثانية كحد أقصى
+            await asyncio.wait_for(read_output(), timeout=20.0)
+
+        except asyncio.TimeoutError:
+            print("⚠️ انتهى الوقت ولم يتم استلام كود من الملف.")
+            # لا نقتل العملية هنا لأنها قد تكون في طور الاتصال، لكن نرد للواجهة بالخطأ
+            return {"status": "error", "message": "انتهى الوقت. تأكد أن الرقم صحيح ولم يتم ربطه مسبقاً."}
+
+        if pairing_code == "ALREADY_CONNECTED":
+            return {"status": "success", "message": "المتجر متصل بالفعل", "pairing_code": "CONNECTED"}
+
+        if pairing_code:
+            return {
+                "status": "success", 
+                "pairing_code": pairing_code,
+                "store_id": store_id
+            }
+        
+        return {"status": "error", "message": "فشل توليد الكود. تحقق من سجلات السيرفر."}
+
+    except Exception as e:
+        print(f"🚨 [CRITICAL ERROR]: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
     # إعداد البيانات للـ Evolution API
