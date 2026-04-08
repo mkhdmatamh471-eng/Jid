@@ -87,9 +87,9 @@ SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 
 
 # تأكد أن هذا الرابط هو رابط سيرفر النود وليس بايثون
-WHATSAPP_URL = "https://sahbmad-06sg.onrender.com" 
+WHATSAPP_URL = https://sahbmad.onrender.com" 
 
-NODE_SERVICE_URL = os.getenv("NODE_SERVICE_URL", "https://sahbmad-06sg.onrender.com")
+NODE_SERVICE_URL = os.getenv("NODE_SERVICE_URL", "https://sahbmad.onrender.com")
 
 class BaileysDirectHandler:
     def __init__(self, store_id: str):
