@@ -1,36 +1,23 @@
 services:
   - type: web
-    name: salla-ai-bot
+    name: jaddahh-ai-bot  # الاسم الجديد هنا
     env: docker
     plan: free 
     region: frankfurt
     healthCheckPath: /
     envVars:
-      # قاعدة البيانات والذكاء الاصطناعي
+      - key: PORT
+        value: "10000"
       - key: DATABASE_URL
         sync: false
       - key: GROQ_API_KEY
         sync: false
-      
-      # إعدادات سلة (Salla)
       - key: SALLA_CLIENT_ID
         sync: false
       - key: SALLA_CLIENT_SECRET
         sync: false
       - key: SALLA_WEBHOOK_SECRET
         sync: false
-
-      # إعدادات واتساب (Baileys Direct)
-      # لاحظ: لم نعد بحاجة لـ WHATSAPP_URL الخارجي لأن السيرفر أصبح "داخلياً"
-      - key: SESSION_PATH
-        value: /app/sessions 
-      
-      # متغيرات البيئة لبايثون
       - key: PYTHONUNBUFFERED
         value: "1"
-
-    # --- الجزء الأهم لضمان استمرار الاتصال ---
-    disk:
-      name: whatsapp-sessions
-      mountPath: /app/sessions
-      sizeGB: 1
+    # تم حذف قسم disk لأن الخطة المجانية لا تدعمه
