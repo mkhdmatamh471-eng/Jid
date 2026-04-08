@@ -35,6 +35,7 @@ import subprocess
 import sqlite3
 import json
 import urllib.parse
+from fastapi import Request, BackgroundTasks
 from fastapi import APIRouter
 import threading
 from fastapi.responses import HTMLResponse
@@ -83,55 +84,33 @@ SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 # --- 2. دوال توليد الباركود ونظام الجسر (الجديدة) ---
 # ========================================================
 
+
+
+NODE_SERVICE_URL = os.getenv("NODE_SERVICE_URL", "https://sahbmad-06sg.onrender.com")
+
 class BaileysDirectHandler:
     def __init__(self, store_id: str):
         self.store_id = store_id
-        self.process = None
 
-    async def start_session(self):
-        """تشغيل عملية Node.js للجلسة"""
-        # 1. تشغيل العملية
-        self.process = subprocess.Popen(
-            ["node", "wa-bridge.js", self.store_id],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1  # هام جداً لضمان القراءة السطرية الفورية
-        )
-        
-        # 2. إضافة الـ Thread هنا (المكان الصحيح)
-        # يبدأ بمجرد إنشاء العملية ليراقب الـ stdout الخاص بها
-        thread = threading.Thread(
-            target=monitor_output, 
-            args=(self.process, self.store_id), 
-            daemon=True
-        )
-        thread.start()
-        
-        logger.info(f"🚀 Started Baileys Bridge & Monitor for Store: {self.store_id}")
+    async def start_session(self, phone: str = None):
+        """بدء الجلسة لطلب الباركود أو كود الربط"""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            payload = {"storeId": self.store_id, "phoneNumber": phone}
+            resp = await client.post(f"{NODE_SERVICE_URL}/api/session/start", json=payload)
+            return resp.json()
 
     async def send_text(self, phone: str, text: str):
-        """إرسال أمر للملف البرمجي Node.js"""
+        """إرسال رسالة للعميل"""
         clean_phone = "".join(filter(str.isdigit, phone))
-        # التأكد من أننا نرسل التنسيق الذي يتوقعه ملف wa-bridge.js (SEND:رقم|نص)
-        command = f"SEND:{clean_phone}|{text}\n"
-        
-        # التأكد من أن العملية تعمل قبل الإرسال
-        if self.process is None or self.process.poll() is not None:
-            await self.start_session()
-            # ننتظر قليلاً لضمان بدء التشغيل قبل الكتابة في stdin
-            import asyncio
-            await asyncio.sleep(1)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            payload = {
+                "storeId": self.store_id,
+                "phone": clean_phone,
+                "text": text
+            }
+            resp = await client.post(f"{NODE_SERVICE_URL}/api/message/send", json=payload)
+            return resp.status_code == 200
 
-        try:
-            if self.process and self.process.stdin:
-                self.process.stdin.write(command)
-                self.process.stdin.flush()
-                return True
-        except Exception as e:
-            logger.error(f"❌ Failed to write to Node.js stdin: {e}")
-        return False
 
 # استبدل الـ Handler القديم في كودك بهذا
 async def get_handler_for_store(store_id: str):
@@ -314,6 +293,18 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 
 
+
+@app.post("/webhook/node-incoming")
+async def handle_node_incoming(request: Request, background_tasks: BackgroundTasks):
+    data = await request.json()
+    store_id = data.get("storeId")
+    phone = data.get("phone")
+    message = data.get("message")
+    
+    # تمرير الرسالة لمعالج الذكاء الاصطناعي الموجود لديك مسبقاً
+    background_tasks.add_task(process_customer_request, store_id, phone, message)
+    
+    return {"status": "received"}
 
 def monitor_output(process, store_id):
     for line in iter(process.stdout.readline, ''):
