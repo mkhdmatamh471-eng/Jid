@@ -154,75 +154,105 @@ def text_to_base64_qr(qr_text: str):
         return None
 
 async def get_qr_from_bridge(store_id):
-    """جلب الباركود عبر طلب API من سيرفر Node.js"""
-    logger.info(f"🚀 طلب توليد باركود للمتجر عبر الـ API: {store_id}")
+    """جلب الباركود مع تسجيل تفصيلي لكل خطوة"""
+    logger.info(f"--- [START QR GENERATION] Store: {store_id} ---")
     
+    if not NODE_SERVICE_URL:
+        logger.error("❌ [CONFIG ERROR]: NODE_SERVICE_URL is not defined in environment variables!")
+        return None
+
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            # نرسل طلب لبدء الجلسة (بدون رقم هاتف ليعطينا باركود)
-            response = await client.post(
-                f"{NODE_SERVICE_URL}/api/session/start", 
-                json={"storeId": store_id}
-            )
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            logger.info(f"📡 [1/3] Sending POST request to Node.js Service...")
             
+            payload = {"storeId": store_id}
+            response = await client.post(f"{NODE_SERVICE_URL}/api/session/start", json=payload)
+            
+            logger.info(f"📥 [2/3] Received Response: Status {response.status_code}")
+
             if response.status_code == 200:
                 data = response.json()
-                
-                # إذا كان متصلاً بالفعل
-                if data.get("status") == "connected" or data.get("status") == "ALREADY_CONNECTED":
+                status = data.get("status")
+                logger.info(f"🔍 [3/3] Logic Branch: {status}")
+
+                if status in ["connected", "ALREADY_CONNECTED"]:
+                    logger.info(f"✅ [SUCCESS] Store {store_id} is already active.")
                     return "CONNECTED"
                 
-                # إذا أعاد باركود
-                if data.get("status") == "qr_code":
+                if status == "qr_code":
                     qr_raw = data.get("qr")
-                    logger.info(f"✅ تم استلام QR للمتجر {store_id}")
-                    # هنا نستخدم الدالة الخاصة بك لتحويل النص لباركود صور
-                    return text_to_base64_qr(qr_raw)
+                    if qr_raw:
+                        logger.info(f"✨ [SUCCESS] QR Data received (Length: {len(qr_raw)})")
+                        return text_to_base64_qr(qr_raw)
+                    else:
+                        logger.warning("⚠️ [DATA ERROR] Status was qr_code but 'qr' field is empty!")
+                
+                logger.warning(f"❓ [UNKNOWN STATUS] Response data: {data}")
+            else:
+                logger.error(f"❌ [HTTP ERROR] Server returned: {response.text}")
             
-            logger.error(f"❌ فشل استلام QR من السيرفر: {response.text}")
-            return None
-
+    except httpx.ConnectError:
+        logger.error("🚨 [CONNECTION ERROR] Could not reach Node.js service. Check if it's sleeping or URL is wrong.")
+    except httpx.TimeoutException:
+        logger.error("⏳ [TIMEOUT ERROR] Node.js service took too long to generate QR.")
     except Exception as e:
-        logger.error(f"🚨 خطأ في الاتصال بسيرفر Node: {str(e)}")
-        return None
+        logger.error(f"💥 [CRITICAL ERROR] Unexpected failure: {str(e)}")
+    
+    return None
+
 
 @app.get("/admin/link-phone/{store_id}")
 async def link_phone_auto_logic(store_id: str, phone: str):
-    """طلب كود ربط (Pairing Code) عبر سيرفر Node.js"""
+    """طلب كود ربط مع لوجز تتبع المسار الكامل"""
     clean_phone = "".join(filter(str.isdigit, phone))
     
-    print(f"📱 [BACKEND] طلب كود ربط للمتجر: {store_id} رقم: {clean_phone}")
+    print(f"\n" + "="*60)
+    print(f"📱 [PAIRING PROCESS] Start for Store: {store_id} | Target: {clean_phone}")
+    print("="*60)
 
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            # نرسل طلب لبدء الجلسة مع رقم الهاتف
-            response = await client.post(
-                f"{NODE_SERVICE_URL}/api/session/start", 
-                json={"storeId": store_id, "phoneNumber": clean_phone}
-            )
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            print(f"🔗 [STEP 1] Dispatching pairing request to Node service...")
             
+            payload = {"storeId": store_id, "phoneNumber": clean_phone}
+            response = await client.post(f"{NODE_SERVICE_URL}/api/session/start", json=payload)
+            
+            print(f"📡 [STEP 2] Node.js response received. Status Code: {response.status_code}")
+
             if response.status_code == 200:
                 data = response.json()
-                
-                # حالة المتجر متصل
-                if data.get("status") == "connected" or data.get("status") == "ALREADY_CONNECTED":
+                status = data.get("status")
+                print(f"📝 [STEP 3] Bridge Status: {status}")
+
+                if status in ["connected", "ALREADY_CONNECTED"]:
+                    print(f"✅ [RESULT] Store {store_id} is already linked. No code needed.")
                     return {"status": "success", "message": "المتجر متصل بالفعل", "pairing_code": "CONNECTED"}
                 
-                # حالة استلام كود الربط
-                if data.get("status") == "pairing_code":
+                if status == "pairing_code":
                     pairing_code = data.get("code")
-                    print(f"✅ تم استلام كود الربط: {pairing_code}")
+                    print(f"🎉 [RESULT] Pairing Code successfully generated: {pairing_code}")
                     return {
                         "status": "success", 
                         "pairing_code": pairing_code,
                         "store_id": store_id
                     }
-            
-            return {"status": "error", "message": f"فشل من سيرفر Node: {response.text}"}
+                
+                print(f"⚠️ [RESULT] Unexpected JSON structure: {data}")
+            else:
+                print(f"❌ [STEP 2 FAULT] Raw error from Node: {response.text}")
+                return {"status": "error", "message": f"خطأ من سيرفر الواتساب: {response.status_code}"}
 
+    except httpx.TimeoutException:
+        print("⏳ [FAILURE] Request timed out. Pairing usually takes 10-20 seconds.")
+        return {"status": "error", "message": "انتهى الوقت، السيرفر مشغول حالياً."}
     except Exception as e:
-        print(f"🚨 [CRITICAL ERROR]: {str(e)}")
-        return {"status": "error", "message": "فشل الاتصال بمشغل الواتساب
+        print(f"🚨 [FATAL ERROR] {type(e).__name__}: {str(e)}")
+        return {"status": "error", "message": "حدث خطأ داخلي في نظام الربط."}
+    finally:
+        print(f"{'='*60}\n")
+
+
+
 # ========================================================
 # --- 3. روابط الـ API (Endpoints) ---
 # ========================================================
