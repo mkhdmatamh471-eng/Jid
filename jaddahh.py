@@ -154,72 +154,75 @@ def text_to_base64_qr(qr_text: str):
         return None
 
 async def get_qr_from_bridge(store_id):
-    logger.info(f"🚀 بدء محاولة توليد الباركود للمتجر: {store_id}")
+    """جلب الباركود عبر طلب API من سيرفر Node.js"""
+    logger.info(f"🚀 طلب توليد باركود للمتجر عبر الـ API: {store_id}")
     
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.error("❌ DATABASE_URL missing!")
-        return None
-
-    env_vars = os.environ.copy()
-    # تأكد من أن الرابط يبدأ بـ postgresql ليتوافق مع مكتبة pg في Node
-    if db_url.startswith("postgres://"):
-        env_vars["DATABASE_URL"] = db_url.replace("postgres://", "postgresql://", 1)
-
-    process = None
     try:
-        # تشغيل الجسر
-        process = await asyncio.create_subprocess_exec(
-            'node', 'wa-bridge.js', store_id,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env_vars 
-        )
-        
-        start_time = time.time()
-        # مهلة 60 ثانية للحصول على الباركود
-        while time.time() - start_time < 60:
-            # قراءة السطر من stdout
-            line = await process.stdout.readline()
-            if not line:
-                # إذا انتهى السطر ولم نجد شيئاً، نفحص أخطاء stderr
-                error_output = await process.stderr.read()
-                if error_output:
-                    logger.error(f"❌ Node Error Output: {error_output.decode()}")
-                break
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            # نرسل طلب لبدء الجلسة (بدون رقم هاتف ليعطينا باركود)
+            response = await client.post(
+                f"{NODE_SERVICE_URL}/api/session/start", 
+                json={"storeId": store_id}
+            )
             
-            line_decode = line.decode().strip()
-            # طباعة اللوج القادم من Node في سجلات ريندر للمتابعة
-            if "[DB]" in line_decode or "[WA]" in line_decode:
-                logger.info(f"🖥️ [Node-Bridge]: {line_decode}")
-
-            # 1. حالة وجود باركود
-            if "QR_DATA_START:" in line_decode:
-                raw_qr = line_decode.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
-                logger.info(f"✅ تم التقاط QR للمتجر {store_id}")
+            if response.status_code == 200:
+                data = response.json()
                 
-                # إغلاق العملية بعد الحصول على الباركود بنجاح
-                try: process.terminate() 
-                except: pass
+                # إذا كان متصلاً بالفعل
+                if data.get("status") == "connected" or data.get("status") == "ALREADY_CONNECTED":
+                    return "CONNECTED"
                 
-                return text_to_base64_qr(raw_qr)
-
-            # 2. حالة المتجر متصل أصلاً
-            if "SESSION_OPENED" in line_decode or "[WA_READY]" in line_decode:
-                logger.info(f"✅ المتجر {store_id} متصل بالفعل.")
-                try: process.terminate()
-                except: pass
-                return "CONNECTED"
+                # إذا أعاد باركود
+                if data.get("status") == "qr_code":
+                    qr_raw = data.get("qr")
+                    logger.info(f"✅ تم استلام QR للمتجر {store_id}")
+                    # هنا نستخدم الدالة الخاصة بك لتحويل النص لباركود صور
+                    return text_to_base64_qr(qr_raw)
+            
+            logger.error(f"❌ فشل استلام QR من السيرفر: {response.text}")
+            return None
 
     except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع في دالة الجسر: {str(e)}")
-    finally:
-        # ضمان إغلاق العملية في كل الأحوال
-        if process and process.returncode is None:
-            try: process.terminate()
-            except: pass
+        logger.error(f"🚨 خطأ في الاتصال بسيرفر Node: {str(e)}")
+        return None
+
+@app.get("/admin/link-phone/{store_id}")
+async def link_phone_auto_logic(store_id: str, phone: str):
+    """طلب كود ربط (Pairing Code) عبر سيرفر Node.js"""
+    clean_phone = "".join(filter(str.isdigit, phone))
+    
+    print(f"📱 [BACKEND] طلب كود ربط للمتجر: {store_id} رقم: {clean_phone}")
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            # نرسل طلب لبدء الجلسة مع رقم الهاتف
+            response = await client.post(
+                f"{NODE_SERVICE_URL}/api/session/start", 
+                json={"storeId": store_id, "phoneNumber": clean_phone}
+            )
             
-    return None
+            if response.status_code == 200:
+                data = response.json()
+                
+                # حالة المتجر متصل
+                if data.get("status") == "connected" or data.get("status") == "ALREADY_CONNECTED":
+                    return {"status": "success", "message": "المتجر متصل بالفعل", "pairing_code": "CONNECTED"}
+                
+                # حالة استلام كود الربط
+                if data.get("status") == "pairing_code":
+                    pairing_code = data.get("code")
+                    print(f"✅ تم استلام كود الربط: {pairing_code}")
+                    return {
+                        "status": "success", 
+                        "pairing_code": pairing_code,
+                        "store_id": store_id
+                    }
+            
+            return {"status": "error", "message": f"فشل من سيرفر Node: {response.text}"}
+
+    except Exception as e:
+        print(f"🚨 [CRITICAL ERROR]: {str(e)}")
+        return {"status": "error", "message": "فشل الاتصال بمشغل الواتساب
 # ========================================================
 # --- 3. روابط الـ API (Endpoints) ---
 # ========================================================
@@ -1607,68 +1610,6 @@ async def fetch_qr(store_id: str):
     return {"status": "error", "message": "فشل في توليد الباركود، حاول مجدداً"}
 
 # 2. دالة كود الربط (Pairing Code)
-@app.get("/admin/link-phone/{store_id}")
-async def link_phone_auto_logic(store_id: str, phone: str):
-    # 1. تنظيف الرقم
-    clean_phone = "".join(filter(str.isdigit, phone))
-    
-    print(f"\n{'='*50}\n📱 [BACKEND] بدء طلب كود ربط للمتجر: {store_id}\n الرقم: {clean_phone}\n{'='*50}")
-
-    try:
-        # 2. تشغيل ملف wa-bridge.js كعملية فرعية (Subprocess)
-        # نمرر اسم المتجر ورقم الهاتف كمعاملات
-        process = await asyncio.create_subprocess_exec(
-            'node', 'wa-bridge.js', store_id, clean_phone,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
-        pairing_code = None
-        # 3. قراءة مخرجات Node.js للبحث عن الكود
-        # نضع مهلة زمنية (timeout) لكي لا يظل الطلب معلقاً
-        try:
-            async def read_output():
-                nonlocal pairing_code
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        break
-                    
-                    line_decode = line.decode().strip()
-                    print(f"🖥️ [NODE_LOG]: {line_decode}") # للطباعة في ريندر
-
-                    if "PAIRING_CODE_START:" in line_decode:
-                        pairing_code = line_decode.split("PAIRING_CODE_START:")[1].split(":PAIRING_CODE_END")[0]
-                        print(f"✅ تم التقاط كود الربط: {pairing_code}")
-                        break
-                    
-                    if "SESSION_OPENED" in line_decode:
-                        pairing_code = "ALREADY_CONNECTED"
-                        break
-
-            # ننتظر الكود لمدة 20 ثانية كحد أقصى
-            await asyncio.wait_for(read_output(), timeout=20.0)
-
-        except asyncio.TimeoutError:
-            print("⚠️ انتهى الوقت ولم يتم استلام كود من الملف.")
-            # لا نقتل العملية هنا لأنها قد تكون في طور الاتصال، لكن نرد للواجهة بالخطأ
-            return {"status": "error", "message": "انتهى الوقت. تأكد أن الرقم صحيح ولم يتم ربطه مسبقاً."}
-
-        if pairing_code == "ALREADY_CONNECTED":
-            return {"status": "success", "message": "المتجر متصل بالفعل", "pairing_code": "CONNECTED"}
-
-        if pairing_code:
-            return {
-                "status": "success", 
-                "pairing_code": pairing_code,
-                "store_id": store_id
-            }
-        
-        return {"status": "error", "message": "فشل توليد الكود. تحقق من سجلات السيرفر."}
-
-    except Exception as e:
-        print(f"🚨 [CRITICAL ERROR]: {str(e)}")
-        return {"status": "error", "message": str(e)}
 
 async def send_whatsapp_message(phone: str, message: str, store_id: str):
     # إعداد البيانات للـ Evolution API
