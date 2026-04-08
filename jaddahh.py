@@ -882,6 +882,29 @@ async def send_via_web_bridge(store_id: str, phone: str, text: str):
         return True
     return False
 
+
+
+async def send_to_whatsapp_node(store_id, phone, text):
+    # WHATSAPP_URL هو رابط سيرفر النود (sahbmad.onrender.com)
+    url = f"{WHATSAPP_URL}/api/message/send"
+    
+    payload = {
+        "storeId": str(store_id),
+        "phone": str(phone),
+        "text": text
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, timeout=20.0)
+            if response.status_code == 200:
+                print(f"✅ تم إرسال الرد للجسر بنجاح: {store_id}")
+            else:
+                print(f"❌ فشل الجسر في الإرسال: {response.text}")
+        except Exception as e:
+            print(f"❌ خطأ في الاتصال بالجسر: {e}")
+
+
 async def get_merchant_stats(store_id: str):
     """جلب إحصائيات المتجر من سلة باستخدام PostgreSQL لجلب التوكن"""
     try:
