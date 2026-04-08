@@ -86,6 +86,8 @@ SALLA_WEBHOOK_SECRET = os.getenv("SALLA_WEBHOOK_SECRET")
 # ========================================================
 
 
+# تأكد أن هذا الرابط هو رابط سيرفر النود وليس بايثون
+WHATSAPP_URL = "https://sahbmad-06sg.onrender.com" 
 
 NODE_SERVICE_URL = os.getenv("NODE_SERVICE_URL", "https://sahbmad-06sg.onrender.com")
 
@@ -1243,13 +1245,14 @@ async def search_salla_products(query: str, store_id: str) -> str:
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
 async def process_customer_request(store_id: str, phone: str, text: str):
-    """المعالج الرئيسي المحدث: يدعم الاستعلام عن الطلبات والبحث عن المنتجات"""
+    """المعالج الرئيسي المحدث: يربط البوت (Groq) بجسر الإرسال (Node.js) مع دعم الطلبات والمنتجات"""
     try:
         # 1. التحقق من حالة المتجر (SQL مباشر)
         store_query = "SELECT is_active, system_prompt FROM store_settings WHERE store_id = :sid LIMIT 1"
         store_res = execute_db_query(store_query, {"sid": store_id}).fetchone()
         
         if not store_res or not store_res[0]: 
+            logger.warning(f"⚠️ المتجر {store_id} غير نشط أو غير موجود.")
             return
         
         system_prompt = store_res[1]
@@ -1295,7 +1298,11 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         # 7. منطق التدخل البشري
         if "[HUMAN_REQUIRED]" in reply or any(word in text for word in ["موظف", "بشري", "حولني"]):
             human_msg = "أبشر، بحولك الآن لزميلي الموظف يكمل معك. لحظات ويكون معك."
-            await message_queue.put((store_id, phone, human_msg))
+            
+            # إرسال رسالة الطمأنة للعميل عبر النود
+            await send_to_whatsapp_node(store_id, phone, human_msg)
+            
+            # إرسال التنبيه للمدير 
             await send_admin_alert(store_id, phone, text)
             
             # تسجيل طلب التحويل في قاعدة البيانات
@@ -1309,8 +1316,9 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         """
         execute_db_query(insert_bot_msg, {"cid": cust_id, "content": reply})
         
-        # وضع الرسالة في طابور الإرسال عبر الواتساب ويب
-        await message_queue.put((store_id, phone, reply))
+        # إرسال الطلب للنود فوراً بدلاً من الطابور الداخلي
+        logger.info(f"🚀 Sending AI response to Node for store {store_id}")
+        await send_to_whatsapp_node(store_id, phone, reply)
 
     except Exception as e:
         logger.error(f"Error in process_customer_request: {str(e)}")
