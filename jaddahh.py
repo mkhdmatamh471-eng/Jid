@@ -1268,19 +1268,19 @@ async def search_salla_products(query: str, store_id: str) -> str:
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
 async def process_customer_request(store_id: str, phone: str, text: str):
-    """المعالج الرئيسي المحدث: يربط البوت (Groq) بجسر الإرسال (Node.js) مع دعم الطلبات والمنتجات"""
+    """المعالج الرئيسي المحدث والمصحح: يضمن الإرسال للرقم الصحيح بعد توليد الرد"""
     try:
-        # 1. التحقق من حالة المتجر (SQL مباشر)
+        # 1. التحقق من حالة المتجر
         store_query = "SELECT is_active, system_prompt FROM store_settings WHERE store_id = :sid LIMIT 1"
         store_res = execute_db_query(store_query, {"sid": store_id}).fetchone()
         
         if not store_res or not store_res[0]: 
-            logger.warning(f"⚠️ المتجر {store_id} غير نشط أو غير موجود.")
+            logger.warning(f"⚠️ المتجر {store_id} غير نشط.")
             return
         
         system_prompt = store_res[1]
 
-        # 2. إدارة هوية العميل (UPSERT)
+        # 2. إدارة هوية العميل (استخدام الرقم القادم لتحديد العميل)
         cust_query = """
             INSERT INTO customers (phone_number) VALUES (:phone)
             ON CONFLICT (phone_number) DO UPDATE SET phone_number = EXCLUDED.phone_number
@@ -1288,64 +1288,62 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         """
         cust_id = execute_db_query(cust_query, {"phone": phone}).fetchone()[0]
 
-        # 3. حفظ رسالة العميل الواردة
+        # 3. حفظ رسالة العميل
         insert_msg_query = """
             INSERT INTO conversations (customer_id, role, content, created_at) 
             VALUES (:cid, 'user', :content, NOW())
         """
         execute_db_query(insert_msg_query, {"cid": cust_id, "content": text})
 
-        # 4. تحليل النية عبر Groq
+        # 4. تحليل النية وجلب المعلومات (وتصحيح الرقم)
         analysis = await groq_analyze_intent(text)
         extra_info = ""
+        verified_phone = phone  # القيمة الافتراضية
 
-        # جلب المعلومات الخارجية بناءً على تحليل النية
         if analysis.get("is_order") and analysis.get("order_id"):
-            extra_info = await get_salla_order(analysis["order_id"], store_id)
+            order_details, salla_phone = await get_salla_order(analysis["order_id"], store_id)
+            extra_info = order_details
+            # تحديث الرقم إذا كان القادم من سلة مختلفاً (لتصحيح الـ 257...)
+            if salla_phone:
+                verified_phone = salla_phone
+                logger.info(f"📍 تم تصحيح الرقم إلى: {verified_phone}")
+
         elif analysis.get("is_product") and analysis.get("product_name"):
             extra_info = await search_salla_products(analysis["product_name"], store_id)
 
-        # 5. جلب تاريخ المحادثة (ضروري لتوليد رد متناسق)
+        # 5. جلب التاريخ لتوليد رد ذكي
         history_query = """
             SELECT role, content FROM conversations 
             WHERE customer_id = :cid 
             ORDER BY created_at DESC LIMIT 5
         """
         history_rows = execute_db_query(history_query, {"cid": cust_id}).fetchall()
-        # ترتيب الرسائل من الأقدم للأحدث ليقرأها الذكاء الاصطناعي بشكل صحيح
         history = [{"role": row[0], "content": row[1]} for row in reversed(history_rows)]
 
-        # 6. توليد الرد باستخدام Groq (نمرر السياق الإضافي هنا)
+        # 6. توليد الرد (قبل الإرسال!)
         reply = await groq_generate_reply(history, extra_info, system_prompt)
 
         # 7. منطق التدخل البشري
         if "[HUMAN_REQUIRED]" in reply or any(word in text for word in ["موظف", "بشري", "حولني"]):
-            human_msg = "أبشر، بحولك الآن لزميلي الموظف يكمل معك. لحظات ويكون معك."
-            
-            # إرسال رسالة الطمأنة للعميل عبر النود
-            await send_to_whatsapp_node(store_id, phone, human_msg)
-            
-            # إرسال التنبيه للمدير 
-            await send_admin_alert(store_id, phone, text)
-            
-            # تسجيل طلب التحويل في قاعدة البيانات
+            human_msg = "أبشر، بحولك الآن لزميلي الموظف يكمل معك."
+            await send_to_whatsapp_node(store_id, verified_phone, human_msg)
+            await send_admin_alert(store_id, verified_phone, text)
             execute_db_query(insert_msg_query, {"cid": cust_id, "content": "human_transfer_triggered"})
             return
 
-        # 8. حفظ رد البوت وإرساله للعميل
+        # 8. حفظ رد البوت في القاعدة
         insert_bot_msg = """
             INSERT INTO conversations (customer_id, role, content, created_at) 
             VALUES (:cid, 'assistant', :content, NOW())
         """
         execute_db_query(insert_bot_msg, {"cid": cust_id, "content": reply})
         
-        # إرسال الطلب للنود فوراً بدلاً من الطابور الداخلي
-        logger.info(f"🚀 Sending AI response to Node for store {store_id}")
-        await send_to_whatsapp_node(store_id, phone, reply)
+        # 9. الإرسال النهائي للجسر (الرقم الموثق + الرد المولد)
+        logger.info(f"🚀 Sending AI response to Node for store {store_id} to phone {verified_phone}")
+        await send_to_whatsapp_node(store_id, verified_phone, reply)
 
     except Exception as e:
         logger.error(f"Error in process_customer_request: {str(e)}")
-
 
 
 @app.api_route("/webhook/salla", methods=["GET", "POST"]) # تعديل هنا للسماح بـ GET و POST
