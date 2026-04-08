@@ -1,23 +1,38 @@
 services:
   - type: web
-    name: jaddahh-ai-bot  # الاسم الجديد هنا
+    name: jaddahh-ai-service  # يمكنك تغيير هذا الاسم للتحكم في الرابط الجديد
     env: docker
     plan: free 
-    region: frankfurt
+    region: frankfurt  # فرانكفورت هي الأفضل لتقليل زمن الاستجابة
     healthCheckPath: /
+    numInstances: 1
     envVars:
+      # إعدادات المنفذ (ضرورية جداً لـ Render)
       - key: PORT
         value: "10000"
+
+      # قاعدة البيانات والذكاء الاصطناعي
       - key: DATABASE_URL
-        sync: false
+        sync: false # سيطلب منك Render إدخال القيمة يدوياً في لوحة التحكم
       - key: GROQ_API_KEY
         sync: false
+
+      # إعدادات سلة (Salla)
       - key: SALLA_CLIENT_ID
         sync: false
       - key: SALLA_CLIENT_SECRET
         sync: false
       - key: SALLA_WEBHOOK_SECRET
         sync: false
+
+      # متغيرات بيئة بايثون لضمان ظهور السجلات فوراً
       - key: PYTHONUNBUFFERED
         value: "1"
-    # تم حذف قسم disk لأن الخطة المجانية لا تدعمه
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
+
+    # ملاحظة: تم حذف قسم disk لأن الخطة المجانية لا تدعمه.
+    # سيتم تخزين الجلسات في قاعدة بيانات Supabase كما هو مبرمج في الكود.
+
+# إذا كنت تستخدم قاعدة بيانات داخل ريندر، أضفها هنا، 
+# ولكن بما أنك تستخدم Supabase فلا داعي لإضافة قسم databases.
