@@ -4,6 +4,7 @@ import hashlib
 import shutil
 import tarfile
 import uvicorn
+import re
 import json
 import qrcode
 import shutil
@@ -887,22 +888,44 @@ async def send_via_web_bridge(store_id: str, phone: str, text: str):
 
 
 async def send_to_whatsapp_node(store_id, phone, text):
-    # WHATSAPP_URL هو رابط سيرفر النود (sahbmad.onrender.com)
+    # 1. تنظيف الرقم من أي رموز غير رقمية
+    clean_phone = re.sub(r'\D', '', str(phone))
+    
+    # 2. منطق تصحيح الأرقام (اليمن والسعودية)
+    
+    # أ - إذا بدأ الرقم بـ 05 أو 5 (غالباً سعودي)
+    if clean_phone.startswith('05') and len(clean_phone) == 10:
+        clean_phone = '966' + clean_phone[1:]  # تحويل 05xxxx إلى 9665xxxx
+    elif clean_phone.startswith('5') and len(clean_phone) == 9:
+        clean_phone = '966' + clean_phone      # تحويل 5xxxx إلى 9665xxxx
+        
+    # ب - إذا بدأ الرقم بـ 07 أو 7 (غالباً يمني)
+    elif clean_phone.startswith('07') and len(clean_phone) == 10:
+        clean_phone = '967' + clean_phone[1:]  # تحويل 07xxxx إلى 9677xxxx
+    elif clean_phone.startswith('7') and len(clean_phone) == 9:
+        clean_phone = '967' + clean_phone      # تحويل 7xxxx إلى 9677xxxx
+
+    # ج - في حال كان الرقم دولي مكتمل (يبدأ بـ 966 أو 967) لا نعدل عليه
+    
+    # 3. إعداد الإرسال
     url = f"{WHATSAPP_URL}/api/message/send"
     
     payload = {
         "storeId": str(store_id),
-        "phone": str(phone),
+        "phone": clean_phone,
         "text": text
     }
     
     async with httpx.AsyncClient() as client:
         try:
+            print(f"🚀 محاولة إرسال إلى: {clean_phone} (المتجر: {store_id})")
+            
             response = await client.post(url, json=payload, timeout=20.0)
+            
             if response.status_code == 200:
-                print(f"✅ تم إرسال الرد للجسر بنجاح: {store_id}")
+                print(f"✅ تم إرسال الرد للجسر بنجاح: {clean_phone}")
             else:
-                print(f"❌ فشل الجسر في الإرسال: {response.text}")
+                print(f"❌ فشل الجسر. الحالة: {response.status_code}, الرد: {response.text}")
         except Exception as e:
             print(f"❌ خطأ في الاتصال بالجسر: {e}")
 
