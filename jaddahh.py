@@ -333,15 +333,36 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 
 @app.post("/webhook/node-incoming")
 async def handle_node_incoming(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
-    store_id = data.get("storeId")
-    phone = data.get("phone")
-    message = data.get("message")
-    
-    # تمرير الرسالة لمعالج الذكاء الاصطناعي الموجود لديك مسبقاً
-    background_tasks.add_task(process_customer_request, store_id, phone, message)
-    
-    return {"status": "received"}
+    try:
+        data = await request.json()
+        
+        # سجل تتبع لرؤية البيانات القادمة من Node.js بوضوح
+        logger.info(f"📥 Incoming Webhook from Node: {data}")
+        
+        store_id = data.get("storeId")
+        # التعديل: استلام 'customerPhone' لضمان التوافق مع التعديلات السابقة في النود
+        # أو الاستمرار بـ 'phone' مع ضمان تنظيفه فوراً
+        raw_phone = data.get("customerPhone") or data.get("phone")
+        message = data.get("message")
+        
+        if not store_id or not raw_phone or not message:
+            logger.warning("⚠️ Webhook received missing data")
+            return {"status": "error", "message": "missing_data"}
+
+        # منطق تنظيف الرقم لضمان الصيغة الدولية النظيفة (إزالة أي زيادات مثل :1 أو @)
+        # هذا يحل مشكلة الرقم الطويل (257...) قبل دخوله للمعالج
+        clean_phone = str(raw_phone).split('@')[0].split(':')[0]
+        clean_phone = "".join(filter(str.isdigit, clean_phone))
+
+        # إرسال المهمة للمعالج المحدث الذي يستخدم (store_id, clean_phone)
+        # المعالج سيقوم بحفظها في جدول conversations بناءً على هذه البيانات
+        background_tasks.add_task(process_customer_request, str(store_id), clean_phone, message)
+        
+        return {"status": "success", "processed_phone": clean_phone}
+
+    except Exception as e:
+        logger.error(f"❌ Error in handle_node_incoming: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
 def monitor_output(process, store_id):
     for line in iter(process.stdout.readline, ''):
@@ -678,19 +699,18 @@ async def refresh_salla_token(store_id: str) -> Optional[str]:
         return None
 
 
-async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
-    """جلب بيانات الطلب من سلة باستخدام PostgreSQL لجلب التوكن"""
+async def get_salla_order(order_id: str, store_id: str):
+    """جلب بيانات الطلب من سلة وإرجاع (نص الرد، رقم هاتف العميل)"""
     try:
-        # 1. جلب التوكن مباشرة من PostgreSQL
+        # 1. جلب التوكن من القاعدة
         query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
         
         if not row:
-            logger.error(f"❌ لم يتم العثور على إعدادات للمتجر {store_id}")
-            return None
+            logger.error(f"❌ لم يتم العثور على توكن للمتجر {store_id}")
+            return "عذراً، المتجر غير مربوط بشكل صحيح.", None
             
         token = row[0]
-        
         url = f"https://api.salla.dev/admin/v2/orders/{order_id}"
         headers = {
             "Authorization": f"Bearer {token}",
@@ -700,21 +720,24 @@ async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, headers=headers)
             
-            # 2. إذا انتهى التوكن (401)، نقوم بتجديده
+            # 2. تجديد التوكن إذا لزم الأمر
             if resp.status_code == 401:
-                logger.info(f"🔄 التوكن انتهى للمتجر {store_id}، جاري التجديد...")
                 new_token = await refresh_salla_token(store_id)
                 if new_token:
                     headers["Authorization"] = f"Bearer {new_token}"
                     resp = await client.get(url, headers=headers)
             
-            # 3. معالجة بيانات الطلب
+            # 3. معالجة البيانات المستلمة
             if resp.status_code == 200:
-                d = resp.json()["data"]
-                # تنسيق الرد للعميل
-                ref_id = d.get('reference_id')
-                status_name = d.get('status', {}).get('name', 'غير معروفة')
-                tracking = d.get('shipping', {}).get('tracking_link')
+                data = resp.json()["data"]
+                
+                # استخراج رقم هاتف العميل الحقيقي من سلة
+                customer_mobile = data.get('customer', {}).get('mobile')
+                
+                # تنسيق معلومات الطلب
+                ref_id = data.get('reference_id')
+                status_name = data.get('status', {}).get('name', 'غير معروفة')
+                tracking = data.get('shipping', {}).get('tracking_link')
                 
                 msg = f"📦 تفاصيل الطلب رقم {ref_id}:\n- الحالة: {status_name}"
                 if tracking:
@@ -722,13 +745,15 @@ async def get_salla_order(order_id: str, store_id: str) -> Optional[str]:
                 else:
                     msg += "\n- التتبع: سيتم تحديثه قريباً."
                 
-                return msg
+                logger.info(f"✅ تم جلب الطلب {ref_id} ورقم الهاتف {customer_mobile}")
+                return msg, customer_mobile
 
-        return None
+        return "لم أتمكن من العثور على هذا الطلب، يرجى التأكد من الرقم.", None
 
     except Exception as e:
-        logger.error(f"❌ خطأ في get_salla_order للمتجر {store_id}: {e}")
-        return "عذراً، لم أتمكن من جلب تفاصيل الطلب حالياً."
+        logger.error(f"❌ خطأ في get_salla_order: {e}")
+        return "حصل عندي خطأ بسيط أثناء فحص الطلب.", None
+ل الطلب حالياً."
 
 # --- خدمات الذكاء الاصطناعي (GROQ xAI) ---
 
@@ -887,47 +912,58 @@ async def send_via_web_bridge(store_id: str, phone: str, text: str):
 
 
 
-async def send_to_whatsapp_node(store_id, phone, text):
+async def send_to_whatsapp_node(store_id: str, phone: str, text: str):
+    """
+    إرسال الرسالة إلى جسر Node.js مع تنظيف الرقم وتوحيد الصيغة الدولية.
+    تتوافق مع تعديل 'customerPhone' لضمان وصول الرد للرقم الصحيح.
+    """
     # 1. تنظيف الرقم من أي رموز غير رقمية
     clean_phone = re.sub(r'\D', '', str(phone))
     
-    # 2. منطق تصحيح الأرقام (اليمن والسعودية)
+    # 2. منطق تصحيح الأرقام (السعودية واليمن) لضمان الصيغة الدولية
     
-    # أ - إذا بدأ الرقم بـ 05 أو 5 (غالباً سعودي)
+    # أ - التعامل مع الأرقام السعودية (05 أو 5)
     if clean_phone.startswith('05') and len(clean_phone) == 10:
-        clean_phone = '966' + clean_phone[1:]  # تحويل 05xxxx إلى 9665xxxx
+        clean_phone = '966' + clean_phone[1:]  # تحويل 055... إلى 9665...
     elif clean_phone.startswith('5') and len(clean_phone) == 9:
-        clean_phone = '966' + clean_phone      # تحويل 5xxxx إلى 9665xxxx
+        clean_phone = '966' + clean_phone      # تحويل 55... إلى 9665...
         
-    # ب - إذا بدأ الرقم بـ 07 أو 7 (غالباً يمني)
+    # ب - التعامل مع الأرقام اليمنية (07 أو 7)
     elif clean_phone.startswith('07') and len(clean_phone) == 10:
-        clean_phone = '967' + clean_phone[1:]  # تحويل 07xxxx إلى 9677xxxx
+        clean_phone = '967' + clean_phone[1:]  # تحويل 077... إلى 9677...
     elif clean_phone.startswith('7') and len(clean_phone) == 9:
-        clean_phone = '967' + clean_phone      # تحويل 7xxxx إلى 9677xxxx
+        clean_phone = '967' + clean_phone      # تحويل 77... إلى 9677...
 
-    # ج - في حال كان الرقم دولي مكتمل (يبدأ بـ 966 أو 967) لا نعدل عليه
-    
-    # 3. إعداد الإرسال
+    # ج - في حال كان الرقم يبدأ بـ 00، نحوله لصيغة المفتاح الدولي المباشر
+    elif clean_phone.startswith('00'):
+        clean_phone = clean_phone[2:]
+
+    # 3. إعداد الإرسال للجسر (Node.js Bridge)
     url = f"{WHATSAPP_URL}/api/message/send"
     
+    # التعديل الجوهري: استخدام 'customerPhone' ليطابق ما يتوقعه النود
     payload = {
         "storeId": str(store_id),
-        "phone": clean_phone,
+        "customerPhone": clean_phone, 
         "text": text
     }
     
     async with httpx.AsyncClient() as client:
         try:
-            print(f"🚀 محاولة إرسال إلى: {clean_phone} (المتجر: {store_id})")
+            logger.info(f"🚀 توجيه الطلب للجسر: {clean_phone} | المتجر: {store_id}")
             
             response = await client.post(url, json=payload, timeout=20.0)
             
             if response.status_code == 200:
-                print(f"✅ تم إرسال الرد للجسر بنجاح: {clean_phone}")
+                logger.info(f"✅ نجح توجيه الرد للرقم: {clean_phone}")
+                return True
             else:
-                print(f"❌ فشل الجسر. الحالة: {response.status_code}, الرد: {response.text}")
+                logger.error(f"❌ خطأ من الجسر ({response.status_code}): {response.text}")
+                return False
+                
         except Exception as e:
-            print(f"❌ خطأ في الاتصال بالجسر: {e}")
+            logger.error(f"❌ فشل الاتصال بخدمة الواتساب (Node): {str(e)}")
+            return False
 
 
 async def get_merchant_stats(store_id: str):
@@ -1268,9 +1304,9 @@ async def search_salla_products(query: str, store_id: str) -> str:
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
 async def process_customer_request(store_id: str, phone: str, text: str):
-    """المعالج الرئيسي المحدث والمصحح: يضمن الإرسال للرقم الصحيح بعد توليد الرد"""
+    """المعالج المحدث: يستخدم رقم الهاتف كمرجع أساسي في المحادثات"""
     try:
-        # 1. التحقق من حالة المتجر
+        # 1. التحقق من حالة المتجر (نفس منطقك السابق)
         store_query = "SELECT is_active, system_prompt FROM store_settings WHERE store_id = :sid LIMIT 1"
         store_res = execute_db_query(store_query, {"sid": store_id}).fetchone()
         
@@ -1280,71 +1316,68 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         
         system_prompt = store_res[1]
 
-        # 2. إدارة هوية العميل (استخدام الرقم القادم لتحديد العميل)
-        cust_query = """
-            INSERT INTO customers (phone_number) VALUES (:phone)
-            ON CONFLICT (phone_number) DO UPDATE SET phone_number = EXCLUDED.phone_number
-            RETURNING id
-        """
-        cust_id = execute_db_query(cust_query, {"phone": phone}).fetchone()[0]
-
-        # 3. حفظ رسالة العميل
+        # 2. حفظ رسالة العميل (باستخدام رقم الهاتف والـ store_id)
+        # ملاحظة: تم استبدال customer_id بـ customer_phone و store_id
         insert_msg_query = """
-            INSERT INTO conversations (customer_id, role, content, created_at) 
-            VALUES (:cid, 'user', :content, NOW())
+            INSERT INTO conversations (customer_phone, role, content, store_id, created_at) 
+            VALUES (:phone, 'user', :content, :sid, NOW())
         """
-        execute_db_query(insert_msg_query, {"cid": cust_id, "content": text})
+        execute_db_query(insert_msg_query, {
+            "phone": phone, 
+            "content": text, 
+            "sid": store_id
+        })
 
-        # 4. تحليل النية وجلب المعلومات (وتصحيح الرقم)
+        # 3. تحليل النية وجلب المعلومات (مع ميزة تصحيح الرقم من سلة)
         analysis = await groq_analyze_intent(text)
         extra_info = ""
-        verified_phone = phone  # القيمة الافتراضية
+        verified_phone = phone 
 
         if analysis.get("is_order") and analysis.get("order_id"):
             order_details, salla_phone = await get_salla_order(analysis["order_id"], store_id)
             extra_info = order_details
-            # تحديث الرقم إذا كان القادم من سلة مختلفاً (لتصحيح الـ 257...)
+            # إذا أرجعت سلة رقماً مختلفاً (نظيفاً)، نعتمد عليه في الإرسال
             if salla_phone:
                 verified_phone = salla_phone
-                logger.info(f"📍 تم تصحيح الرقم إلى: {verified_phone}")
 
         elif analysis.get("is_product") and analysis.get("product_name"):
             extra_info = await search_salla_products(analysis["product_name"], store_id)
 
-        # 5. جلب التاريخ لتوليد رد ذكي
+        # 4. جلب تاريخ المحادثة (بناءً على الهاتف والـ store_id) لضمان خصوصية كل متجر
         history_query = """
             SELECT role, content FROM conversations 
-            WHERE customer_id = :cid 
-            ORDER BY created_at DESC LIMIT 5
+            WHERE customer_phone = :phone AND store_id = :sid 
+            ORDER BY created_at DESC LIMIT 6
         """
-        history_rows = execute_db_query(history_query, {"cid": cust_id}).fetchall()
+        history_rows = execute_db_query(history_query, {"phone": phone, "sid": store_id}).fetchall()
         history = [{"role": row[0], "content": row[1]} for row in reversed(history_rows)]
 
-        # 6. توليد الرد (قبل الإرسال!)
+        # 5. توليد الرد من Groq
         reply = await groq_generate_reply(history, extra_info, system_prompt)
 
-        # 7. منطق التدخل البشري
-        if "[HUMAN_REQUIRED]" in reply or any(word in text for word in ["موظف", "بشري", "حولني"]):
-            human_msg = "أبشر، بحولك الآن لزميلي الموظف يكمل معك."
+        # 6. منطق التدخل البشري
+        if "[HUMAN_REQUIRED]" in reply or any(word in text for word in ["موظف", "بشري", "مندوب"]):
+            human_msg = "أبشر، جاري تحويلك لأحد الزملاء لخدمتك بشكل أفضل."
             await send_to_whatsapp_node(store_id, verified_phone, human_msg)
             await send_admin_alert(store_id, verified_phone, text)
-            execute_db_query(insert_msg_query, {"cid": cust_id, "content": "human_transfer_triggered"})
             return
 
-        # 8. حفظ رد البوت في القاعدة
-        insert_bot_msg = """
-            INSERT INTO conversations (customer_id, role, content, created_at) 
-            VALUES (:cid, 'assistant', :content, NOW())
-        """
-        execute_db_query(insert_bot_msg, {"cid": cust_id, "content": reply})
+        # 7. حفظ رد البوت في قاعدة البيانات
+        # نستخدم نفس الاستعلام مع تغيير الـ role
+        execute_db_query(insert_msg_query, {
+            "phone": phone, 
+            "role": "assistant", 
+            "content": reply, 
+            "sid": store_id
+        })
         
-        # 9. الإرسال النهائي للجسر (الرقم الموثق + الرد المولد)
-        logger.info(f"🚀 Sending AI response to Node for store {store_id} to phone {verified_phone}")
+        # 8. الإرسال النهائي للجسر (Node.js)
+        # نرسل verified_phone الذي قد يكون تم تصحيحه من بيانات سلة
+        logger.info(f"🚀 توجيه الرد للمتجر {store_id} -> الرقم {verified_phone}")
         await send_to_whatsapp_node(store_id, verified_phone, reply)
 
     except Exception as e:
         logger.error(f"Error in process_customer_request: {str(e)}")
-
 
 @app.api_route("/webhook/salla", methods=["GET", "POST"]) # تعديل هنا للسماح بـ GET و POST
 async def handle_salla_event(request: Request, background_tasks: BackgroundTasks):
