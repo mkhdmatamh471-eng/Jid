@@ -121,25 +121,28 @@ async def get_handler_for_store(store_id: str):
     return BaileysDirectHandler(store_id)
 
 def execute_db_query(query: str, params: dict = None, fetch: str = None):
-
     try:
         with engine.connect() as connection:
-            # استخدام begin لضمان تنفيذ العملية ككتلة واحدة (Transaction)
-            with connection.begin():
+            # 1. إذا كان الاستعلام للقراءة فقط (SELECT)
+            if fetch:
                 result = connection.execute(text(query), params or {})
-                
                 if fetch == "one":
                     return result.fetchone()
                 if fetch == "all":
                     return result.fetchall()
-                
-                # ملاحظة: connection.begin() تقوم بعمل commit تلقائياً عند الخروج من الـ with
                 return result
+            
+            # 2. إذا كان الاستعلام للتعديل (INSERT/UPDATE/DELETE)
+            # نستخدم begin لضمان الـ Commit التلقائي
+            with connection.begin():
+                result = connection.execute(text(query), params or {})
+                return result
+                
     except Exception as e:
         logger.error(f"❌ Database Query Error: {e}")
-        # رفع الخطأ ضروري لكي تظهر تفاصيله في سجلات Render
+        # رفع الخطأ مهم جداً لمراقبة Logs في Render
         raise e
-        
+      
 def text_to_base64_qr(qr_text: str):
     try:
         qr = qrcode.QRCode(version=1, box_size=10, border=4)
@@ -335,13 +338,9 @@ def verify_salla_signature(payload: bytes, signature: str, secret: str):
 async def handle_node_incoming(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
-        
-        # سجل تتبع لرؤية البيانات القادمة من Node.js بوضوح
         logger.info(f"📥 Incoming Webhook from Node: {data}")
         
-        store_id = data.get("storeId")
-        # التعديل: استلام 'customerPhone' لضمان التوافق مع التعديلات السابقة في النود
-        # أو الاستمرار بـ 'phone' مع ضمان تنظيفه فوراً
+        store_id = str(data.get("storeId"))
         raw_phone = data.get("customerPhone") or data.get("phone")
         message = data.get("message")
         
@@ -349,16 +348,30 @@ async def handle_node_incoming(request: Request, background_tasks: BackgroundTas
             logger.warning("⚠️ Webhook received missing data")
             return {"status": "error", "message": "missing_data"}
 
-        # منطق تنظيف الرقم لضمان الصيغة الدولية النظيفة (إزالة أي زيادات مثل :1 أو @)
-        # هذا يحل مشكلة الرقم الطويل (257...) قبل دخوله للمعالج
-        clean_phone = str(raw_phone).split('@')[0].split(':')[0]
-        clean_phone = "".join(filter(str.isdigit, clean_phone))
+        # 1. تنظيف الرقم أوليًا (إزالة @ وغيرها)
+        temp_phone = str(raw_phone).split('@')[0].split(':')[0]
+        temp_phone = "".join(filter(str.isdigit, temp_phone))
 
-        # إرسال المهمة للمعالج المحدث الذي يستخدم (store_id, clean_phone)
-        # المعالج سيقوم بحفظها في جدول conversations بناءً على هذه البيانات
-        background_tasks.add_task(process_customer_request, str(store_id), clean_phone, message)
+        # 2. التحقق من جدول الربط (Mapping Lookup)
+        # إذا كان الرقم هو المعرف التقني 257... سيتم استبداله هنا بـ 967...
+        verified_phone = temp_phone
+        try:
+            mapping_query = "SELECT real_phone FROM phone_mappings WHERE lid = :lid AND store_id = :sid LIMIT 1"
+            mapping_res = execute_db_query(mapping_query, {"lid": temp_phone, "sid": store_id}).fetchone()
+            if mapping_res:
+                verified_phone = str(mapping_res[0])
+                logger.info(f"🔗 [Mapping Discovery] Converted LID {temp_phone} to Real Phone {verified_phone}")
+        except Exception as e:
+            logger.error(f"❌ Error during mapping lookup: {e}")
+
+        # 3. إرسال المهمة للمعالج بالرقم "الموثق"
+        background_tasks.add_task(process_customer_request, store_id, verified_phone, message)
         
-        return {"status": "success", "processed_phone": clean_phone}
+        return {
+            "status": "success", 
+            "original_phone": temp_phone, 
+            "processed_phone": verified_phone
+        }
 
     except Exception as e:
         logger.error(f"❌ Error in handle_node_incoming: {str(e)}")
@@ -697,6 +710,21 @@ async def refresh_salla_token(store_id: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"❌ خطأ غير متوقع أثناء تجديد التوكن للمتجر {store_id}: {str(e)}")
         return None
+
+
+
+
+def get_real_phone_from_mapping(lid: str, store_id: str):
+    """البحث عن الرقم الحقيقي المقابل للمعرف التقني في قاعدة البيانات"""
+    try:
+        query = "SELECT real_phone FROM phone_mappings WHERE lid = :lid AND store_id = :sid LIMIT 1"
+        result = execute_db_query(query, {"lid": lid, "sid": store_id}, fetch="one")
+        return result[0] if result else lid
+    except Exception as e:
+        logger.error(f"❌ Error in get_real_phone_from_mapping: {e}")
+        return lid
+
+
 
 
 async def get_salla_order(order_id: str, store_id: str):
@@ -1306,9 +1334,9 @@ async def search_salla_products(query: str, store_id: str) -> str:
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
 async def process_customer_request(store_id: str, phone: str, text: str):
-    """المعالج المحدث: يستخدم رقم الهاتف كمرجع أساسي في المحادثات"""
+    """المعالج المحدث: يستخدم رقم الهاتف كمرجع أساسي مع ميزة التعلم الذاتي للربط"""
     try:
-        # 1. التحقق من حالة المتجر (نفس منطقك السابق)
+        # 1. التحقق من حالة المتجر
         store_query = "SELECT is_active, system_prompt FROM store_settings WHERE store_id = :sid LIMIT 1"
         store_res = execute_db_query(store_query, {"sid": store_id}).fetchone()
         
@@ -1318,19 +1346,14 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         
         system_prompt = store_res[1]
 
-        # 2. حفظ رسالة العميل (باستخدام رقم الهاتف والـ store_id)
-        # ملاحظة: تم استبدال customer_id بـ customer_phone و store_id
+        # 2. حفظ رسالة العميل (باستخدام المعرف الحالي)
         insert_msg_query = """
             INSERT INTO conversations (customer_phone, role, content, store_id, created_at) 
             VALUES (:phone, 'user', :content, :sid, NOW())
         """
-        execute_db_query(insert_msg_query, {
-            "phone": phone, 
-            "content": text, 
-            "sid": store_id
-        })
+        execute_db_query(insert_msg_query, {"phone": phone, "content": text, "sid": store_id})
 
-        # 3. تحليل النية وجلب المعلومات (مع ميزة تصحيح الرقم من سلة)
+        # 3. تحليل النية وجلب المعلومات
         analysis = await groq_analyze_intent(text)
         extra_info = ""
         verified_phone = phone 
@@ -1338,20 +1361,33 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         if analysis.get("is_order") and analysis.get("order_id"):
             order_details, salla_phone = await get_salla_order(analysis["order_id"], store_id)
             extra_info = order_details
-            # إذا أرجعت سلة رقماً مختلفاً (نظيفاً)، نعتمد عليه في الإرسال
+            
+            # --- منطق التعلم الذاتي (Self-Learning Mapping) ---
             if salla_phone:
                 verified_phone = salla_phone
+                # إذا كان الرقم الحالي "معرف طويل" ورقمه في سلة "حقيقي"، احفظ الربط فوراً
+                if phone.startswith('257') or len(phone) > 15:
+                    try:
+                        mapping_query = """
+                            INSERT INTO phone_mappings (store_id, lid, real_phone) 
+                            VALUES (:sid, :lid, :real) 
+                            ON CONFLICT (lid) DO UPDATE SET real_phone = :real
+                        """
+                        execute_db_query(mapping_query, {"sid": store_id, "lid": phone, "real": salla_phone})
+                        logger.info(f"✅ [Auto-Mapping] Linked {phone} to {salla_phone}")
+                    except Exception as mapping_err:
+                        logger.error(f"❌ Mapping save error: {mapping_err}")
 
         elif analysis.get("is_product") and analysis.get("product_name"):
             extra_info = await search_salla_products(analysis["product_name"], store_id)
 
-        # 4. جلب تاريخ المحادثة (بناءً على الهاتف والـ store_id) لضمان خصوصية كل متجر
+        # 4. جلب تاريخ المحادثة (نستخدم verified_phone لضمان جلب التاريخ المرتبط بالرقم الحقيقي)
         history_query = """
             SELECT role, content FROM conversations 
             WHERE customer_phone = :phone AND store_id = :sid 
             ORDER BY created_at DESC LIMIT 6
         """
-        history_rows = execute_db_query(history_query, {"phone": phone, "sid": store_id}).fetchall()
+        history_rows = execute_db_query(history_query, {"phone": verified_phone, "sid": store_id}).fetchall()
         history = [{"role": row[0], "content": row[1]} for row in reversed(history_rows)]
 
         # 5. توليد الرد من Groq
@@ -1364,22 +1400,21 @@ async def process_customer_request(store_id: str, phone: str, text: str):
             await send_admin_alert(store_id, verified_phone, text)
             return
 
-        # 7. حفظ رد البوت في قاعدة البيانات
-        # نستخدم نفس الاستعلام مع تغيير الـ role
+        # 7. حفظ رد البوت
+        # نحفظه تحت الـ verified_phone ليكون التاريخ متسقاً
         execute_db_query(insert_msg_query, {
-            "phone": phone, 
+            "phone": verified_phone, 
             "role": "assistant", 
             "content": reply, 
             "sid": store_id
         })
         
-        # 8. الإرسال النهائي للجسر (Node.js)
-        # نرسل verified_phone الذي قد يكون تم تصحيحه من بيانات سلة
+        # 8. الإرسال النهائي
         logger.info(f"🚀 توجيه الرد للمتجر {store_id} -> الرقم {verified_phone}")
         await send_to_whatsapp_node(store_id, verified_phone, reply)
 
     except Exception as e:
-        logger.error(f"Error in process_customer_request: {str(e)}")
+        logger.error(f"❌ Error in process_customer_request: {str(e)}")
 
 @app.api_route("/webhook/salla", methods=["GET", "POST"]) # تعديل هنا للسماح بـ GET و POST
 async def handle_salla_event(request: Request, background_tasks: BackgroundTasks):
