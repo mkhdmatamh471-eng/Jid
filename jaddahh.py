@@ -708,7 +708,7 @@ async def get_salla_order(order_id: str, store_id: str):
         
         if not row:
             logger.error(f"❌ لم يتم العثور على توكن للمتجر {store_id}")
-            return "عذراً، المتجر غير مربوط بشكل صحيح.", None
+            return "عذراً، المتجر غير مربوط بشكل صحيح بسلة.", None
             
         token = row[0]
         url = f"https://api.salla.dev/admin/v2/orders/{order_id}"
@@ -718,23 +718,24 @@ async def get_salla_order(order_id: str, store_id: str):
         }
         
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=headers, timeout=10.0)
             
-            # 2. تجديد التوكن إذا لزم الأمر
+            # 2. تجديد التوكن إذا لزم الأمر (في حال انتهت صلاحيته)
             if resp.status_code == 401:
+                logger.info(f"🔄 تجديد التوكن للمتجر {store_id}...")
                 new_token = await refresh_salla_token(store_id)
                 if new_token:
                     headers["Authorization"] = f"Bearer {new_token}"
                     resp = await client.get(url, headers=headers)
             
-            # 3. معالجة البيانات المستلمة
+            # 3. معالجة البيانات المستلمة بنجاح
             if resp.status_code == 200:
                 data = resp.json()["data"]
                 
-                # استخراج رقم هاتف العميل الحقيقي من سلة
+                # استخراج رقم هاتف العميل الحقيقي لتحديث verified_phone
                 customer_mobile = data.get('customer', {}).get('mobile')
                 
-                # تنسيق معلومات الطلب
+                # تنسيق معلومات الطلب للعرض
                 ref_id = data.get('reference_id')
                 status_name = data.get('status', {}).get('name', 'غير معروفة')
                 tracking = data.get('shipping', {}).get('tracking_link')
@@ -743,17 +744,18 @@ async def get_salla_order(order_id: str, store_id: str):
                 if tracking:
                     msg += f"\n- رابط التتبع: {tracking}"
                 else:
-                    msg += "\n- التتبع: سيتم تحديثه قريباً."
+                    msg += "\n- التتبع: سيتم تحديثه فور تسليمه لشركة الشحن."
                 
                 logger.info(f"✅ تم جلب الطلب {ref_id} ورقم الهاتف {customer_mobile}")
                 return msg, customer_mobile
 
-        return "لم أتمكن من العثور على هذا الطلب، يرجى التأكد من الرقم.", None
+            # في حال كان الخطأ 404 أو غيره من سلة
+            logger.warning(f"⚠️ طلب غير موجود أو خطأ من سلة: {resp.status_code}")
+            return "لم أتمكن من العثور على هذا الطلب، يرجى التأكد من الرقم الصحيح.", None
 
     except Exception as e:
-        logger.error(f"❌ خطأ في get_salla_order: {e}")
-        return "حصل عندي خطأ بسيط أثناء فحص الطلب.", None
-ل الطلب حالياً."
+        logger.error(f"❌ خطأ في get_salla_order للمتجر {store_id}: {str(e)}")
+        return "حصل عندي خطأ بسيط أثناء فحص تفاصيل الطلب، جرب مرة أخرى لاحقاً.", None
 
 # --- خدمات الذكاء الاصطناعي (GROQ xAI) ---
 
