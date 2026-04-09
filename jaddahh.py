@@ -944,44 +944,49 @@ async def send_via_web_bridge(store_id: str, phone: str, text: str):
 
 async def send_to_whatsapp_node(store_id: str, phone: str, text: str):
     """
-    إرسال الرسالة إلى جسر Node.js مع تنظيف الرقم وتوحيد الصيغة الدولية.
-    تتوافق مع تعديل 'customerPhone' لضمان وصول الرد للرقم الصحيح.
+    إرسال الرسالة إلى جسر Node.js مع تنظيف الرقم، توحيد الصيغة الدولية،
+    والتحقق من جدول الربط (Mapping) لضمان الإرسال للرقم الحقيقي.
     """
-    # 1. تنظيف الرقم من أي رموز غير رقمية
-    clean_phone = re.sub(r'\D', '', str(phone))
-    
-    # 2. منطق تصحيح الأرقام (السعودية واليمن) لضمان الصيغة الدولية
-    
-    # أ - التعامل مع الأرقام السعودية (05 أو 5)
-    if clean_phone.startswith('05') and len(clean_phone) == 10:
-        clean_phone = '966' + clean_phone[1:]  # تحويل 055... إلى 9665...
-    elif clean_phone.startswith('5') and len(clean_phone) == 9:
-        clean_phone = '966' + clean_phone      # تحويل 55... إلى 9665...
-        
-    # ب - التعامل مع الأرقام اليمنية (07 أو 7)
-    elif clean_phone.startswith('07') and len(clean_phone) == 10:
-        clean_phone = '967' + clean_phone[1:]  # تحويل 077... إلى 9677...
-    elif clean_phone.startswith('7') and len(clean_phone) == 9:
-        clean_phone = '967' + clean_phone      # تحويل 77... إلى 9677...
-
-    # ج - في حال كان الرقم يبدأ بـ 00، نحوله لصيغة المفتاح الدولي المباشر
-    elif clean_phone.startswith('00'):
-        clean_phone = clean_phone[2:]
-
-    # 3. إعداد الإرسال للجسر (Node.js Bridge)
-    url = f"{WHATSAPP_URL}/api/message/send"
-    
-    # التعديل الجوهري: استخدام 'customerPhone' ليطابق ما يتوقعه النود
-    payload = {
-        "storeId": str(store_id),
-        "customerPhone": clean_phone, 
-        "text": text
-    }
-    
-    async with httpx.AsyncClient() as client:
+    try:
+        # 1. التحقق أولاً: هل الرقم الممرر هو LID (مثل 257...)؟
+        # إذا كان كذلك، نحاول جلب الرقم الحقيقي من قاعدة البيانات قبل الإرسال
+        verified_phone = phone
         try:
+            # نبحث في جدول الربط الذي أنشأناه
+            mapping_query = "SELECT real_phone FROM phone_mappings WHERE lid = :lid AND store_id = :sid LIMIT 1"
+            mapping_res = execute_db_query(mapping_query, {"lid": str(phone), "sid": str(store_id)}, fetch="one")
+            if mapping_res:
+                verified_phone = str(mapping_res[0])
+                logger.info(f"🔗 [Outgoing Mapping] Routing reply from LID {phone} to Real Phone {verified_phone}")
+        except Exception as e:
+            logger.error(f"⚠️ Error checking mapping for outgoing: {e}")
+
+        # 2. تنظيف الرقم من أي رموز غير رقمية
+        clean_phone = re.sub(r'\D', '', str(verified_phone))
+        
+        # 3. منطق تصحيح الأرقام (السعودية واليمن) لضمان الصيغة الدولية
+        if clean_phone.startswith('05') and len(clean_phone) == 10:
+            clean_phone = '966' + clean_phone[1:]
+        elif clean_phone.startswith('5') and len(clean_phone) == 9:
+            clean_phone = '966' + clean_phone
+        elif clean_phone.startswith('07') and len(clean_phone) == 10:
+            clean_phone = '967' + clean_phone[1:]
+        elif clean_phone.startswith('7') and len(clean_phone) == 9:
+            clean_phone = '967' + clean_phone
+        elif clean_phone.startswith('00'):
+            clean_phone = clean_phone[2:]
+
+        # 4. إعداد الإرسال للجسر (Node.js Bridge)
+        url = f"{WHATSAPP_URL}/api/message/send"
+        
+        payload = {
+            "storeId": str(store_id),
+            "customerPhone": clean_phone, 
+            "text": text
+        }
+        
+        async with httpx.AsyncClient() as client:
             logger.info(f"🚀 توجيه الطلب للجسر: {clean_phone} | المتجر: {store_id}")
-            
             response = await client.post(url, json=payload, timeout=20.0)
             
             if response.status_code == 200:
@@ -991,10 +996,9 @@ async def send_to_whatsapp_node(store_id: str, phone: str, text: str):
                 logger.error(f"❌ خطأ من الجسر ({response.status_code}): {response.text}")
                 return False
                 
-        except Exception as e:
-            logger.error(f"❌ فشل الاتصال بخدمة الواتساب (Node): {str(e)}")
-            return False
-
+    except Exception as e:
+        logger.error(f"❌ فشل الاتصال بخدمة الواتساب (Node): {str(e)}")
+        return False
 
 async def get_merchant_stats(store_id: str):
     """جلب إحصائيات المتجر من سلة باستخدام PostgreSQL لجلب التوكن"""
