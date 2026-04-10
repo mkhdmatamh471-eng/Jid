@@ -1191,36 +1191,58 @@ async def check_abandoned_carts_and_remind(store_id: str):
     except Exception as e:
         logger.error(f"❌ خطأ في دالة السلال المتروكة للمتجر {store_id}: {e}")
 
+
 async def cron_scheduler():
-    """مهمة تعمل في الخلفية كل ساعة لفحص السلال المتروكة"""
+    """مجدول مهام ذكي: فحص السلال المتروكة + تحديث الذاكرة + تنظيف الموارد"""
     while True:
-        logger.info("Starting abandoned carts check cycle...")
+        logger.info("🟢 [Cron] بدء دورة الفحص الشاملة...")
         
         try:
-            # الاتصال بقاعدة البيانات باستخدام الرابط الموحد
-            conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # جلب المتاجر النشطة
-            cur.execute("SELECT store_id FROM store_settings WHERE is_active = True")
-            active_stores = cur.fetchall()
-            
-            # إغلاق الاتصال بعد جلب البيانات لتوفير موارد السيرفر
-            cur.close()
-            conn.close()
+            # 1. جلب المتاجر النشطة (مع استخدام context manager لضمان إغلاق الاتصال تلقائياً)
+            with psycopg2.connect(os.getenv("DATABASE_URL")) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT store_id, store_name FROM store_settings WHERE is_active = True")
+                    active_stores = cur.fetchall()
 
-            # الدوران على المتاجر
+            if not active_stores:
+                logger.info("⚪ لا توجد متاجر نشطة حالياً.")
+            
             for store in active_stores:
-                try:
-                    await check_abandoned_carts_and_remind(store["store_id"])
-                except Exception as e:
-                    logger.error(f"Error in cron for store {store['store_id']}: {e}")
-        
-        except Exception as db_error:
-            logger.error(f"Database connection error in cron: {db_error}")
+                sid = store["store_id"]
+                s_name = store.get("store_name", sid)
 
-        # الانتظار لمدة ساعة
-        await asyncio.sleep(3600)
+                # المهمة أ: فحص السلال المتروكة وإرسال التذكيرات
+                try:
+                    logger.info(f"🛒 فحص السلال المتروكة لمتجر: {s_name}")
+                    await check_abandoned_carts_and_remind(sid)
+                except Exception as e:
+                    logger.error(f"❌ خطأ في السلال المتروكة لـ {sid}: {e}")
+
+                # المهمة ب: تحديث الذاكرة والبيانات (اسم، وصف، منتجات) بشكل دوري
+                # يمكنك جعلها تحدث مرة كل 24 ساعة بدلاً من كل ساعة لتقليل ضغط الـ API
+                try:
+                    logger.info(f"🧠 تحديث الذاكرة والبيانات لمتجر: {s_name}")
+                    await update_store_knowledge_base(sid)
+                except Exception as e:
+                    logger.error(f"❌ خطأ في تحديث ذاكرة {sid}: {e}")
+
+                # إضافة تأخير بسيط (Buffer) بين كل متجر لعدم تجاوز Rate Limit الخاص بسلة
+                await asyncio.sleep(2)
+
+            # 2. مهمة تنظيف الرام (إغلاق الجلسات غير النشطة)
+            try:
+                logger.info("🧹 تنظيف جلسات المتاجر غير النشطة لتوفير الرام...")
+                await close_inactive_stores(max_idle_time=3600)
+            except Exception as e:
+                logger.error(f"❌ خطأ في تنظيف الرام: {e}")
+
+        except Exception as global_error:
+            logger.error(f"🚨 خطأ فادح في المجدول العام: {global_error}")
+
+        # الانتظار لمدة ساعة قبل الدورة القادمة
+        logger.info("💤 اكتملت الدورة. المجدول في وضع الانتظار لمدة ساعة...")
+        await asyncio.sleep(100)
+
 # تحديث دالة بدء التطبيق لتشغيل المجدل
 @app.on_event("startup")
 async def create_whatsapp_table():
@@ -1904,81 +1926,86 @@ async def send_whatsapp_message(phone: str, message: str, store_id: str):
 
 # تأكد من استيراد هذا
 
+
 @app.get("/callback")
 async def salla_callback(code: str, state: str = None):
-    """استقبال التاجر وتوجيهه للوحة التحكم مع معالجة المهلة والأخطاء"""
-    token_url = "https://accounts.salla.sa/oauth2/token"
-    user_info_url = "https://accounts.salla.sa/oauth2/user/info"
+    """استقبال التاجر وتوجيهه للوحة التحكم مع طباعة تفصيلية لكل خطوة"""
     
-    redirect_uri = os.getenv("SALLA_CALLBACK_URL") 
+    logger.info("--- 🚀 بدء عملية استقبال التاجر (Callback) ---")
+    logger.info(f"📍 الكود المستلم من سلة: {code[:10]}...") # طباعة أول جزء من الكود للأمان
+    
+    token_url = "https://accounts.salla.sa/oauth2/token"
+    user_info_url = "https://api.salla.dev/admin/v2/user/info"
     
     payload = {
         "client_id": os.getenv("SALLA_CLIENT_ID"),
         "client_secret": os.getenv("SALLA_CLIENT_SECRET"),
         "grant_type": "authorization_code",
         "code": code,
-        "scope": "offline_access",
-        "redirect_uri": redirect_uri,
+        "redirect_uri": os.getenv("SALLA_CALLBACK_URL"),
     }
     
-    # زيادة المهلة لـ 40 ثانية لضمان استجابة سلة وسرعة Render
     async with httpx.AsyncClient(timeout=40.0) as client:
         try:
-            # 1. تبادل الكود بالتوكنات
+            # الخطوة 1: تبادل الكود بالتوكنات
+            logger.info("🔄 جاري إرسال طلب لتبادل الكود بالتوكن (POST to Salla)...")
             resp = await client.post(token_url, data=payload)
             
             if resp.status_code != 200:
-                logger.error(f"❌ فشل تبادل التوكن: {resp.text}")
-                return HTMLResponse(content=f"<h1>فشل الربط</h1><p>{resp.text}</p>", status_code=400)
+                logger.error(f"❌ فشل تبادل التوكن: {resp.status_code} - {resp.text}")
+                return HTMLResponse(content=f"<h1>فشل التوكن</h1><p>{resp.text}</p>", status_code=400)
 
             token_data = resp.json()
-            salla_access_token = token_data.get("salla_access_token")
+            access_token = token_data.get("access_token")
             refresh_token = token_data.get("refresh_token")
+            logger.info("✅ تم الحصول على الـ Access Token بنجاح.")
 
-            # 2. جلب معلومات المتجر (بمهلة انتظار كافية)
+            # الخطوة 2: جلب معلومات المتجر
+            logger.info("📡 جاري طلب معلومات المتجر (GET User Info)...")
             user_info_resp = await client.get(
                 user_info_url, 
-                headers={"Authorization": f"Bearer {salla_access_token}"}
+                headers={"Authorization": f"Bearer {access_token}"}
             )
             
             if user_info_resp.status_code != 200:
+                logger.error(f"❌ فشل جلب بيانات المتجر: {user_info_resp.text}")
                 return HTMLResponse(content="<h1>فشل جلب بيانات المتجر</h1>", status_code=400)
 
             user_data = user_info_resp.json()
-            
-            # المسار الأكثر دقة للمعرف في سلة
-            store_id = str(user_data["data"]["id"]) 
-            store_name = user_data["data"].get("name", "متجرك")
+            store_id = str(user_data["data"]["id"])
+            store_name = user_data["data"].get("name", "غير معروف")
+            logger.info(f"🏪 تم تحديد المتجر: {store_name} (ID: {store_id})")
 
-            # 3. حفظ البيانات في PostgreSQL (تأكد من وجود الأعمدة في القاعدة)
+            # الخطوة 3: حفظ البيانات في Supabase/PostgreSQL
+            logger.info(f"💾 جاري حفظ بيانات المتجر {store_id} في قاعدة البيانات...")
             upsert_query = """
-                INSERT INTO store_settings (store_id, salla_salla_access_token, refresh_token, is_active, updated_at)
+                INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
                 VALUES (:sid, :access, :refresh, True, NOW())
                 ON CONFLICT (store_id) DO UPDATE SET 
-                    salla_access_token = EXCLUDED.salla_access_token,
-                    refresh_token = EXCLUDED.refresh_token,
+                    salla_access_token = :access,
+                    refresh_token = :refresh,
                     is_active = True,
                     updated_at = NOW();
             """
             
             execute_db_query(upsert_query, {
                 "sid": store_id,
-                "access": salla_access_token,
+                "access": access_token,
                 "refresh": refresh_token
             })
-            
-            logger.info(f"🚀 تم الربط بنجاح للمتجر: {store_id} ({store_name})")
-            
-            # 4. التوجيه التلقائي للوحة التحكم
-            return RedirectResponse(url=f"/admin/dashboard/{store_id}")
+            logger.info(f"✨ تم تحديث بيانات المتجر {store_id} بنجاح في الجدول.")
+
+            # الخطوة 4: التوجيه النهائي
+            logger.info("🏁 تمت العملية بنجاح. توجيه العميل إلى صفحة النجاح في سلة.")
+            return RedirectResponse(url="https://s.salla.sa/apps/install-success")
             
         except httpx.ReadTimeout:
-            logger.error("⏳ انتهت مهلة الانتظار مع سيرفر سلة")
-            return HTMLResponse("<h1>خطأ في الاتصال</h1><p>استغرق سيرفر سلة وقتاً طويلاً للرد. حاول مرة أخرى.</p>", status_code=504)
+            logger.error("⏳ خطأ: انتهت مهلة الانتظار (Timeout) مع سيرفر سلة.")
+            return HTMLResponse("<h1>انتهت المهلة</h1><p>سيرفر سلة استغرق وقتاً طويلاً، حاول مرة أخرى.</p>")
+            
         except Exception as e:
-            logger.error(f"❌ خطأ غير متوقع: {e}")
+            logger.error(f"⚠️ خطأ غير متوقع: {str(e)}", exc_info=True)
             return HTMLResponse(content=f"<h1>خطأ فني</h1><p>{str(e)}</p>", status_code=500)
-
 
 @app.post("/admin/test-ai/{store_id}")
 async def test_ai(store_id: str, data: dict):
