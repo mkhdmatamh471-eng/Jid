@@ -1343,7 +1343,7 @@ async def update_store_knowledge_base(store_id):
     try:
         # 1. جلب التوكن باستخدام دالتك execute_db_query
         # نستخدم fetch="one" لجلب سجل واحد
-        query = "SELECT salla_access_token FROM stores WHERE id = :sid LIMIT 1"
+        query = "SELECT salla_access_token FROM store_settings WHERE id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
 
         if not row or not row[0]:
