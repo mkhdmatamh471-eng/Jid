@@ -1340,45 +1340,49 @@ async def search_salla_products(query: str, store_id: str) -> str:
 
 
 async def update_store_knowledge_base(store_id):
-    # 1. جلب التوكن الخاص بالمتجر من قاعدة بياناتك (Supabase مثلاً)
-    store_data = db.table("stores").select("access_token").eq("id", store_id).single().execute()
-    access_token = store_data.data.get("access_token")
-
-    if not access_token:
-        return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة"
-
     try:
-        # 2. جلب قائمة المنتجات من API سلة
-        # نطلب اسم المنتج، الوصف، والسعر
-        headers = {"Authorization": f"Bearer {access_token}"}
-        salla_url = "https://api.salla.dev/admin/v2/products"
-        response = requests.get(salla_url, headers=headers)
-        products = response.json().get("data", [])
+        # 1. جلب التوكن باستخدام دالتك execute_db_query
+        # نستخدم fetch="one" لجلب سجل واحد
+        query = "SELECT access_token FROM stores WHERE id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
 
-        # 3. تلخيص المنتجات لإرسالها لـ Groq
-        product_list = "\n".join([f"- {p['name']}: {p.get('description', '')[:50]}..." for p in products])
+        if not row or not row[0]:
+            return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة"
+
+        access_token = row[0]
+
+        # 2. جلب المنتجات من سلة باستخدام httpx
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            salla_url = "https://api.salla.dev/admin/v2/products"
+            response = await client.get(salla_url, headers=headers)
+            
+            if response.status_code != 200:
+                return f"❌ فشل الاتصال بسلة: {response.status_code}"
+                
+            products = response.json().get("data", [])
+
+        if not products:
+            return "⚠️ لا توجد منتجات في المتجر لتحديث الذاكرة."
+
+        # 3. تلخيص أسماء المنتجات
+        product_names = [p['name'] for p in products]
+        context = "، ".join(product_names)
         
-        # 4. إرسال البيانات لـ Groq لصياغة الـ Prompt الجديد
-        # هنا نخبر Groq أن المتجر في سلة
-        prompt_to_groq = f"""
-        أنت خبير في صياغة تعليمات الذكاء الاصطناعي. 
-        بناءً على قائمة منتجات متجر سلة التالية، صغ تعليمات (System Prompt) للبوت 
-        ليقوم بالرد على العملاء بدقة.
-        المنتجات:
-        {product_list}
-        """
-        
-        # استدعاء Groq (كما فعلنا سابقاً)
+        # 4. طلب صياغة الـ Prompt من Groq
+        # ملاحظة: تأكد أن GROQ_API_KEY معرف لديك في الـ env
+        prompt_to_groq = f"أنت مساعد ذكي لمتجر سلة. صغ System Prompt احترافي بناءً على هذه المنتجات: {context}"
         new_ai_instruction = await call_groq_api(prompt_to_groq)
 
-        # 5. تحديث الإعدادات في قاعدة البيانات
-        db.table("stores_config").update({"system_prompt": new_ai_instruction}).eq("store_id", store_id).execute()
+        # 5. تحديث الإعدادات باستخدام دالتك execute_db_query (بدون fetch للتحديث)
+        update_query = "UPDATE store_settings SET system_prompt = :prompt WHERE store_id = :sid"
+        execute_db_query(update_query, {"prompt": new_ai_instruction, "sid": store_id})
 
-        return "✅ تم جلب المنتجات من سلة وتحديث ذكاء البوت بنجاح!"
+        return "✅ تم تحديث ذكاء البوت بنجاح من بيانات سلة!"
 
     except Exception as e:
-        return f"❌ فشل جلب البيانات من سلة: {str(e)}"
-
+        logger.error(f"Error in update_store_knowledge: {e}")
+        return f"❌ حدث خطأ: {str(e)}"
 
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
