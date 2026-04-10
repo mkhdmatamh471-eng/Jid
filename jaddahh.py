@@ -632,7 +632,7 @@ async def refresh_salla_token(store_id: str) -> Optional[str]:
             resp = await client.post(url, data=payload)
             if resp.status_code == 200:
                 data = resp.json()
-                new_access = data["access_token"]
+                new_access = data["salla_access_token"]
                 new_refresh = data["refresh_token"]
 
                 # تحديث الحقلين (salla_access_token و access_token) معاً ليكونوا "نفس بعض"
@@ -1349,11 +1349,11 @@ async def update_store_knowledge_base(store_id):
         if not row or not row[0]:
             return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة"
 
-        access_token = row[0]
+        salla_access_token = row[0]
 
         # 2. جلب المنتجات من سلة باستخدام httpx
         async with httpx.AsyncClient() as client:
-            headers = {"Authorization": f"Bearer {access_token}"}
+            headers = {"Authorization": f"Bearer {salla_access_token}"}
             salla_url = "https://api.salla.dev/admin/v2/products"
             response = await client.get(salla_url, headers=headers)
             
@@ -1906,13 +1906,13 @@ async def salla_callback(code: str, state: str = None):
                 return HTMLResponse(content=f"<h1>فشل الربط</h1><p>{resp.text}</p>", status_code=400)
 
             token_data = resp.json()
-            access_token = token_data.get("access_token")
+            salla_access_token = token_data.get("salla_access_token")
             refresh_token = token_data.get("refresh_token")
 
             # 2. جلب معلومات المتجر (بمهلة انتظار كافية)
             user_info_resp = await client.get(
                 user_info_url, 
-                headers={"Authorization": f"Bearer {access_token}"}
+                headers={"Authorization": f"Bearer {salla_access_token}"}
             )
             
             if user_info_resp.status_code != 200:
@@ -1926,7 +1926,7 @@ async def salla_callback(code: str, state: str = None):
 
             # 3. حفظ البيانات في PostgreSQL (تأكد من وجود الأعمدة في القاعدة)
             upsert_query = """
-                INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
+                INSERT INTO store_settings (store_id, salla_salla_access_token, refresh_token, is_active, updated_at)
                 VALUES (:sid, :access, :refresh, True, NOW())
                 ON CONFLICT (store_id) DO UPDATE SET 
                     salla_access_token = EXCLUDED.salla_access_token,
@@ -1937,7 +1937,7 @@ async def salla_callback(code: str, state: str = None):
             
             execute_db_query(upsert_query, {
                 "sid": store_id,
-                "access": access_token,
+                "access": salla_access_token,
                 "refresh": refresh_token
             })
             
