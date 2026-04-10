@@ -1927,13 +1927,46 @@ async def send_whatsapp_message(phone: str, message: str, store_id: str):
 # تأكد من استيراد هذا
 
 
+
 @app.get("/callback")
-async def salla_callback(code: str, state: str = None):
-    """استقبال التاجر وتوجيهه للوحة التحكم مع طباعة تفصيلية لكل خطوة"""
-    
+async def salla_callback(
+    code: Optional[str] = None, 
+    error: Optional[str] = None, 
+    error_description: Optional[str] = None, 
+    state: Optional[str] = None
+):
+    """
+    استقبال التاجر ومعالجة عملية الربط مع سلة
+    تم جعل الحقول اختيارية (Optional) لمنع انهيار السيرفر في حال وجود خطأ من سلة
+    """
+
+    # 1. معالجة الأخطاء القادمة من سلة (مثل invalid_scope)
+    if error:
+        logger.error(f"❌ فشل الربط من جهة سلة: {error_description}")
+        return HTMLResponse(content=f"""
+            <div style="font-family: sans-serif; text-align: center; padding: 50px; direction: rtl;">
+                <h1 style="color: #e74c3c;">فشل عملية الربط</h1>
+                <p style="font-size: 18px;">السبب: <span style="color: #c0392b;">{error_description}</span></p>
+                <hr style="width: 50%; border: 0.5px solid #eee;">
+                <p>تأكد من مطابقة الصلاحيات (Scopes) في الرابط مع إعدادات التطبيق في بوابة شركاء سلة.</p>
+                <a href="https://salla.sa/partners/" style="color: #3498db;">الذهاب لمركز الشركاء</a>
+            </div>
+        """, status_code=400)
+
+    # 2. التحقق من وجود الكود (في حال الدخول المباشر للرابط)
+    if not code:
+        logger.warning("⚠️ محاولة دخول للـ Callback بدون كود تفعيل.")
+        return HTMLResponse(content="""
+            <div style="font-family: sans-serif; text-align: center; padding: 50px; direction: rtl;">
+                <h1>عذراً، الكود مفقود</h1>
+                <p>لا يمكن تفعيل المتجر عبر الدخول المباشر لهذا الرابط. يرجى البدء من خلال رابط الـ OAuth الرسمي.</p>
+            </div>
+        """, status_code=400)
+
+    # --- تبدأ الآن عملية المعالجة الفعلية بعد استلام الكود بنجاح ---
     logger.info("--- 🚀 بدء عملية استقبال التاجر (Callback) ---")
-    logger.info(f"📍 الكود المستلم من سلة: {code[:10]}...") # طباعة أول جزء من الكود للأمان
-    
+    logger.info(f"📍 الكود المستلم: {code[:10]}...") 
+
     token_url = "https://accounts.salla.sa/oauth2/token"
     user_info_url = "https://api.salla.dev/admin/v2/user/info"
     
@@ -1972,18 +2005,21 @@ async def salla_callback(code: str, state: str = None):
                 return HTMLResponse(content="<h1>فشل جلب بيانات المتجر</h1>", status_code=400)
 
             user_data = user_info_resp.json()
+            # استخراج الـ ID والاسم
             store_id = str(user_data["data"]["id"])
-            store_name = user_data["data"].get("name", "غير معروف")
+            store_name = user_data["data"].get("name", "متجر جديد")
             logger.info(f"🏪 تم تحديد المتجر: {store_name} (ID: {store_id})")
 
-            # الخطوة 3: حفظ البيانات في Supabase/PostgreSQL
+            # الخطوة 3: حفظ البيانات في قاعدة البيانات
             logger.info(f"💾 جاري حفظ بيانات المتجر {store_id} في قاعدة البيانات...")
+            
+            # ملاحظة: تأكد من تعريف دالة execute_db_query في مشروعك
             upsert_query = """
                 INSERT INTO store_settings (store_id, salla_access_token, refresh_token, is_active, updated_at)
                 VALUES (:sid, :access, :refresh, True, NOW())
                 ON CONFLICT (store_id) DO UPDATE SET 
-                    salla_access_token = :access,
-                    refresh_token = :refresh,
+                    salla_access_token = EXCLUDED.salla_access_token,
+                    refresh_token = EXCLUDED.refresh_token,
                     is_active = True,
                     updated_at = NOW();
             """
@@ -1995,13 +2031,13 @@ async def salla_callback(code: str, state: str = None):
             })
             logger.info(f"✨ تم تحديث بيانات المتجر {store_id} بنجاح في الجدول.")
 
-            # الخطوة 4: التوجيه النهائي
-            logger.info("🏁 تمت العملية بنجاح. توجيه العميل إلى صفحة النجاح في سلة.")
+            # الخطوة 4: التوجيه النهائي لصفحة النجاح في سلة
+            logger.info("🏁 تمت العملية بنجاح. توجيه العميل.")
             return RedirectResponse(url="https://s.salla.sa/apps/install-success")
             
         except httpx.ReadTimeout:
             logger.error("⏳ خطأ: انتهت مهلة الانتظار (Timeout) مع سيرفر سلة.")
-            return HTMLResponse("<h1>انتهت المهلة</h1><p>سيرفر سلة استغرق وقتاً طويلاً، حاول مرة أخرى.</p>")
+            return HTMLResponse("<h1>انتهت المهلة</h1><p>سيرفر سلة استغرق وقتاً طويلاً، حاول تحديث الصفحة.</p>", status_code=504)
             
         except Exception as e:
             logger.error(f"⚠️ خطأ غير متوقع: {str(e)}", exc_info=True)
