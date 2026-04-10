@@ -1338,22 +1338,22 @@ async def search_salla_products(query: str, store_id: str) -> str:
 
 
 
-
 async def update_store_knowledge_base(store_id):
     try:
-        # التصحيح هنا: إضافة حرف 'n' ليكون salla_access_token
+        # 1. جلب التوكن من جدول store_settings
         query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
 
         if not row or not row[0]:
-            return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة في جدول store_settings"
+            return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة"
 
         salla_access_token = row[0]
 
-        # باقي الكود كما هو...
+        # 2. جلب المنتجات من سلة مع تفاصيلها
         async with httpx.AsyncClient() as client:
             headers = {"Authorization": f"Bearer {salla_access_token}"}
-            salla_url = "https://api.salla.dev/admin/v2/products"
+            # جلب أول 50 منتج لضمان تغطية جيدة للمتجر
+            salla_url = "https://api.salla.dev/admin/v2/products?per_page=50"
             response = await client.get(salla_url, headers=headers)
             
             if response.status_code != 200:
@@ -1364,24 +1364,47 @@ async def update_store_knowledge_base(store_id):
         if not products:
             return "⚠️ لا توجد منتجات في المتجر لتحديث الذاكرة."
 
-        product_names = [p['name'] for p in products]
-        context = "، ".join(product_names)
+        # 3. معالجة بيانات المنتجات (الاسم، السعر، الوصف)
+        detailed_products = []
+        for p in products:
+            name = p.get('name', 'بدون اسم')
+            # استخراج السعر بمرونة (سواء كان كائن أو رقم مباشر)
+            price_data = p.get('price', {})
+            price = price_data.get('amount', '') if isinstance(price_data, dict) else price_data
+            currency = price_data.get('currency', 'ر.س') if isinstance(price_data, dict) else 'ر.س'
+            
+            description = p.get('description', '')
+            # تنظيف الوصف من وسوم HTML وتقليص الطول لتوفير الـ Tokens
+            clean_description = re.sub('<[^<]+?>', '', description)[:100]
+            
+            detailed_products.append(f"- {name} | السعر: {price} {currency} | {clean_description}")
+
+        # تحويل القائمة إلى نص واحد كبير ليكون سياقاً للذكاء الاصطناعي
+        context = "\n".join(detailed_products)
         
-        prompt_to_groq = f"أنت مساعد ذكي لمتجر سلة. صغ System Prompt احترافي بناءً على هذه المنتجات: {context}"
-        new_ai_instruction = await groq_analyze_intent(prompt_to_groq)
+        # 4. طلب صياغة الـ System Prompt بناءً على البيانات
+        prompt_to_groq = f"""
+        أنت مساعد ذكي لمتجر سلة. لقد تم تزويدك بقائمة المنتجات التالية وأسعارها:
+        {context}
         
-               # --- الحل هنا ---
-        # إذا كانت النتيجة "قاموس" (dict)، نحولها لنص JSON
+        بناءً على هذه البيانات، صغ System Prompt احترافي للبوت يجعله قادراً على:
+        1. الإجابة بدقة عن أسعار المنتجات المذكورة.
+        2. وصف المنتجات للعملاء بأسلوب جذاب.
+        3. الالتزام باللهجة السعودية الودودة والترحيب بالعميل.
+        """
+        
+        # نستخدم دالة التوليد (Generate) لإنتاج نص تعليمي
+        new_ai_instruction = await groq_generate_reply([], context, prompt_to_groq)
+
+        # 5. معالجة الرد لضمان توافقه مع قاعدة البيانات (تحويل Dict إلى String)
         if isinstance(new_ai_instruction, dict):
             new_ai_instruction = json.dumps(new_ai_instruction, ensure_ascii=False)
-        # ----------------
 
-
-        # التأكد أيضاً أن اسم العمود هنا صحيح (system_prompt و store_id)
+        # 6. تحديث قاعدة البيانات بالتعليمات الجديدة
         update_query = "UPDATE store_settings SET system_prompt = :prompt WHERE store_id = :sid"
         execute_db_query(update_query, {"prompt": new_ai_instruction, "sid": store_id})
 
-        return "✅ تم تحديث ذكاء البوت بنجاح من بيانات سلة!"
+        return "✅ تم تحديث ذكاء البوت بنجاح ببيانات المنتجات والأسعار!"
 
     except Exception as e:
         logger.error(f"Error in update_store_knowledge: {e}")
