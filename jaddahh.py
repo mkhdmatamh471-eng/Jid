@@ -1335,13 +1335,71 @@ async def search_salla_products(query: str, store_id: str) -> str:
         logger.error(f"Error searching products: {e}")
         return "حدث خطأ أثناء محاولة البحث عن تفاصيل المنتج."
 
+
+
+async def update_store_knowledge_base(store_id: str):
+    """دالة لزيارة المتجر وتحليل محتوياته وتخزينها في القاعدة"""
+    try:
+        # 1. جلب عينة من المنتجات (أول 50 منتج)
+        endpoint = "products?per_page=50"
+        data = await salla_request("GET", endpoint, store_id)
+        
+        if not data or 'data' not in data:
+            return "❌ فشل الوصول لبيانات المتجر في سلة."
+
+        # تجميع أسماء المنتجات وأسعارها وتصنيفاتها في نص واحد
+        products_info = []
+        for p in data['data']:
+            products_info.append(f"المنتج: {p['name']} | السعر: {p['price']['amount']} {p['price']['currency']} | القسم: {p.get('main_category', 'عام')}")
+        
+        all_products_text = "\n".join(products_info)
+
+        # 2. إرسال النص لـ Groq لتوليد "هوية المتجر"
+        refinement_prompt = f"""
+        أنت محلل أعمال خبير. إليك قائمة بمنتجات متجر إلكتروني:
+        {all_products_text}
+        
+        بناءً على هذه المنتجات، اكتب وصفاً دقيقاً وشاملاً للمتجر (Knowledge Base) ليعرفه البوت.
+        يجب أن يوضح الوصف:
+        - تخصص المتجر الأساسي.
+        - نطاق الأسعار.
+        - الفئة المستهدفة.
+        - أسلوب الرد المقترح بناءً على نوع المنتجات.
+        اكتب الوصف بصيغة تعليمات موجهة لبوت ذكاء اصطناعي آخر.
+        """
+
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": refinement_prompt}],
+            "temperature": 0.5
+        }
+        
+        # استدعاء API Groq (استخدمhttpx client كما في كودك)
+        # ... كود إرسال الطلب وحفظ النتيجة في متغير ai_generated_desc ...
+
+        # 3. حفظ النتيجة في قاعدة البيانات
+        update_query = """
+            UPDATE store_settings 
+            SET store_description = :desc, last_indexing = NOW() 
+            WHERE store_id = :sid
+        """
+        execute_db_query(update_query, {"desc": ai_generated_desc, "sid": store_id})
+        
+        return "✅ تم تحديث معرفة البوت بالمتجر بنجاح."
+
+    except Exception as e:
+        logger.error(f"Error indexing store {store_id}: {e}")
+        return f"❌ خطأ: {str(e)}"
+
+
+
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
 async def process_customer_request(store_id: str, phone: str, text: str):
     """المعالج المحدث: يستخدم رقم الهاتف كمرجع أساسي مع ميزة التعلم الذاتي للربط"""
     try:
         # 1. التحقق من حالة المتجر
-        store_query = "SELECT is_active, system_prompt FROM store_settings WHERE store_id = :sid LIMIT 1"
+        store_query = "SELECT is_active, system_prompt, store_name, store_description FROM store_settings WHERE store_id = :sid LIMIT 1"
         store_res = execute_db_query(store_query, {"sid": store_id}).fetchone()
         
         if not store_res or not store_res[0]: 
@@ -1395,7 +1453,12 @@ async def process_customer_request(store_id: str, phone: str, text: str):
         history = [{"role": row[0], "content": row[1]} for row in reversed(history_rows)]
 
         # 5. توليد الرد من Groq
-        reply = await groq_generate_reply(history, extra_info, system_prompt)
+        enhanced_system_prompt = f"""
+{store_res[1]} (التعليمات الأساسية)
+اسم المتجر: {store_res[2]}
+هوية ومعلومات المتجر: {store_res[3]}
+"""
+        reply = await groq_generate_reply(history, extra_info, enhanced_system_prompt)
 
         # 6. منطق التدخل البشري
         if "[HUMAN_REQUIRED]" in reply or any(word in text for word in ["موظف", "بشري", "مندوب"]):
@@ -1747,6 +1810,16 @@ async def update_config(store_id: str, settings: dict):
 # نفترض أن لديك كلاس لإدارة العمليات (Subprocess)
 # إذا لم يكن لديك، سأضع لك لمحة عنه بالأسفل
 
+@app.post("/api/store/reindex")
+async def trigger_reindex(request: Request):
+    data = await request.json()
+    store_id = data.get("storeId")
+    
+    if not store_id:
+        return {"error": "Missing storeId"}
+        
+    result = await update_store_knowledge_base(store_id)
+    return {"message": result}
 
 
 @app.get("/api/whatsapp/get-qr/{store_id}")
