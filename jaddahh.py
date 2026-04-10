@@ -1341,9 +1341,8 @@ async def search_salla_products(query: str, store_id: str) -> str:
 
 async def update_store_knowledge_base(store_id):
     try:
-        # 1. جلب التوكن - لاحظ تغيير id إلى store_id وتغيير اسم العمود ليتطابق مع الصورة
-        # في الصورة العمود اسمه salla_access_toke (بدون حرف n في الآخر)
-        query = "SELECT salla_access_toke FROM store_settings WHERE store_id = :sid LIMIT 1"
+        # التصحيح هنا: إضافة حرف 'n' ليكون salla_access_token
+        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
         row = execute_db_query(query, {"sid": store_id}, fetch="one")
 
         if not row or not row[0]:
@@ -1351,7 +1350,7 @@ async def update_store_knowledge_base(store_id):
 
         salla_access_token = row[0]
 
-        # 2. جلب المنتجات من سلة
+        # باقي الكود كما هو...
         async with httpx.AsyncClient() as client:
             headers = {"Authorization": f"Bearer {salla_access_token}"}
             salla_url = "https://api.salla.dev/admin/v2/products"
@@ -1365,15 +1364,13 @@ async def update_store_knowledge_base(store_id):
         if not products:
             return "⚠️ لا توجد منتجات في المتجر لتحديث الذاكرة."
 
-        # 3. تلخيص أسماء المنتجات
         product_names = [p['name'] for p in products]
         context = "، ".join(product_names)
         
-        # 4. طلب صياغة الـ Prompt من Groq
         prompt_to_groq = f"أنت مساعد ذكي لمتجر سلة. صغ System Prompt احترافي بناءً على هذه المنتجات: {context}"
         new_ai_instruction = await call_groq_api(prompt_to_groq)
 
-        # 5. تحديث الإعدادات - التأكد من استخدام store_id و system_prompt
+        # التأكد أيضاً أن اسم العمود هنا صحيح (system_prompt و store_id)
         update_query = "UPDATE store_settings SET system_prompt = :prompt WHERE store_id = :sid"
         execute_db_query(update_query, {"prompt": new_ai_instruction, "sid": store_id})
 
