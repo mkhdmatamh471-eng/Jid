@@ -33,6 +33,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime, timedelta
 import logging
+from fastapi import APIRouter, Request, HTTPException
+from pydantic import BaseModel
 import subprocess
 import sqlite3
 import json
@@ -73,7 +75,6 @@ SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_session")
 SESSION_PATH = os.path.join(os.getcwd(), "whatsapp_sessions")
 
 latest_qrs = {}
-
 
 # 2. جلب بقية المفاتيح
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -1697,6 +1698,28 @@ async def get_dashboard_api_data(store_id: str):
     except Exception as e:
         logger.error(f"Dashboard Data Error: {str(e)}")
         return {"error": f"حدث خطأ أثناء تحديث البيانات: {str(e)}"}
+
+
+
+
+# ... بقية تعريفات app ...
+
+# تعريف موديل لاستلام البيانات
+class RefreshRequest(BaseModel):
+    storeId: str
+
+
+@app.post("/api/store/refresh-knowledge")
+async def refresh_store_knowledge_endpoint(request: RefreshRequest):
+    store_id = request.storeId
+    
+    # استدعاء الدالة التي تقوم بالمهمة
+    result_message = await update_store_knowledge_base(store_id)
+    
+    if "❌" in result_message:
+        return {"success": False, "message": result_message}
+    
+    return {"success": True, "message": result_message}
 
 @app.get("/admin/dashboard/{store_id}", response_class=HTMLResponse)
 async def serve_dashboard(request: Request, store_id: str):
