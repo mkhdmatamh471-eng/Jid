@@ -124,6 +124,8 @@
             <h2 class="text-4xl font-black text-gray-900 mt-2" id="botUsage">--</h2>
             <div class="absolute -bottom-2 -right-2 text-6xl opacity-5 group-hover:opacity-10 transition-opacity">🤖</div>
         </div>
+        
+        
 
         <div class="glass-card p-6 rounded-3xl border border-gray-100 relative overflow-hidden group">
             <p class="text-gray-500 text-xs font-semibold uppercase tracking-wider">سلال متروكة</p>
@@ -250,6 +252,20 @@
                         <label class="block text-sm font-semibold text-gray-700 mb-2">تعليمات البوت (Prompt)</label>
                         <textarea id="systemPrompt" rows="4" class="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="أنت مساعد ذكي لمتجر..."></textarea>
                     </div>
+                    <div class="mb-6 p-4 bg-purple-50 rounded-2xl border border-purple-100">
+    <h4 class="text-sm font-bold text-purple-700 mb-2 flex items-center gap-2">
+        ✨ تحديث ذاكرة البوت
+    </h4>
+    <p class="text-[10px] text-purple-600 mb-3 leading-relaxed">
+        سيقوم البوت بزيارة متجرك الآن وفحص جميع المنتجات والأقسام ليفهم تخصصك بدقة.
+    </p>
+    <button onclick="refreshBotKnowledge()" id="reindexBtn" class="w-full bg-purple-600 text-white py-3 rounded-xl font-bold hover:bg-purple-700 transition shadow-md flex items-center justify-center gap-2 text-sm">
+        <span id="reindexText">تحديث الفهرسة الآن</span>
+        <div id="reindexLoader" class="hidden animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+    </button>
+</div>
+
+
                     <button onclick="saveSettings()" id="saveBtn" class="w-full bg-gray-900 text-white py-4 rounded-xl font-bold hover:bg-black transition shadow-lg">
                         حفظ الإعدادات
                     </button>
