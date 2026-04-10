@@ -576,6 +576,47 @@ async function saveSettings() {
     }
 }
 
+
+async function refreshBotKnowledge() {
+    const btn = document.getElementById('reindexBtn');
+    const btnText = document.getElementById('reindexText');
+    const loader = document.getElementById('reindexLoader');
+
+    // 1. حالة التحميل
+    btn.disabled = true;
+    btnText.innerText = "جاري الفحص...";
+    loader.classList.remove('hidden');
+
+    try {
+        const response = await fetch('/api/store/refresh-knowledge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ storeId: storeId }) // تم تعريفه مسبقاً في كودك
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            showToast("✅ تم تحديث معلومات المتجر بنجاح!");
+            // إذا كان الـ Backend يرسل الـ prompt الجديد، يمكن تحديث الـ textarea هنا
+            if (result.new_description) {
+                document.getElementById('systemPrompt').value = result.new_description;
+            }
+        } else {
+            showToast("❌ " + result.message, false);
+        }
+    } catch (error) {
+        showToast("❌ فشل الاتصال بالخادم", false);
+    } finally {
+        // 2. إعادة الزر لحالته
+        btn.disabled = false;
+        btnText.innerText = "تحديث الفهرسة الآن";
+        loader.classList.add('hidden');
+    }
+}
+
+
+
 /* --- 4. جلب بيانات اللوحة الأساسية --- */
 async function loadDashboard() {
     if (!storeId || storeId === "None" || storeId === "") return;
