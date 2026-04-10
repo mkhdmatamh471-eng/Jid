@@ -1369,6 +1369,13 @@ async def update_store_knowledge_base(store_id):
         
         prompt_to_groq = f"أنت مساعد ذكي لمتجر سلة. صغ System Prompt احترافي بناءً على هذه المنتجات: {context}"
         new_ai_instruction = await groq_analyze_intent(prompt_to_groq)
+        
+               # --- الحل هنا ---
+        # إذا كانت النتيجة "قاموس" (dict)، نحولها لنص JSON
+        if isinstance(new_ai_instruction, dict):
+            new_ai_instruction = json.dumps(new_ai_instruction, ensure_ascii=False)
+        # ----------------
+
 
         # التأكد أيضاً أن اسم العمود هنا صحيح (system_prompt و store_id)
         update_query = "UPDATE store_settings SET system_prompt = :prompt WHERE store_id = :sid"
