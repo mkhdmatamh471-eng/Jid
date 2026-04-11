@@ -7,9 +7,6 @@ import uvicorn
 import re
 from groq import Groq
 from datetime import datetime, timedelta
-import json
-import qrcode
-import shutil
 import qrcode
 from io import BytesIO
 from fastapi.responses import FileResponse, HTMLResponse
@@ -38,7 +35,6 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 import subprocess
 import sqlite3
-import json
 import urllib.parse
 from fastapi import Request, BackgroundTasks
 from fastapi import APIRouter
@@ -261,6 +257,64 @@ async def link_phone_auto_logic(store_id: str, phone: str):
         print(f"{'='*60}\n")
 
 
+async def send_to_whatsapp_node(store_id: str, phone: str, text: str):
+    """
+    إرسال الرسالة إلى جسر Node.js مع تنظيف الرقم، توحيد الصيغة الدولية،
+    والتحقق من جدول الربط (Mapping) لضمان الإرسال للرقم الحقيقي.
+    """
+    try:
+        # 1. التحقق أولاً: هل الرقم الممرر هو LID (مثل 257...)؟
+        # إذا كان كذلك، نحاول جلب الرقم الحقيقي من قاعدة البيانات قبل الإرسال
+        verified_phone = phone
+        try:
+            # نبحث في جدول الربط الذي أنشأناه
+            mapping_query = "SELECT real_phone FROM phone_mappings WHERE lid = :lid AND store_id = :sid LIMIT 1"
+            mapping_res = execute_db_query(mapping_query, {"lid": str(phone), "sid": str(store_id)}, fetch="one")
+            if mapping_res:
+                verified_phone = str(mapping_res[0])
+                logger.info(f"🔗 [Outgoing Mapping] Routing reply from LID {phone} to Real Phone {verified_phone}")
+        except Exception as e:
+            logger.error(f"⚠️ Error checking mapping for outgoing: {e}")
+
+        # 2. تنظيف الرقم من أي رموز غير رقمية
+        clean_phone = re.sub(r'\D', '', str(verified_phone))
+        
+        # 3. منطق تصحيح الأرقام (السعودية واليمن) لضمان الصيغة الدولية
+        if clean_phone.startswith('05') and len(clean_phone) == 10:
+            clean_phone = '966' + clean_phone[1:]
+        elif clean_phone.startswith('5') and len(clean_phone) == 9:
+            clean_phone = '966' + clean_phone
+        elif clean_phone.startswith('07') and len(clean_phone) == 10:
+            clean_phone = '967' + clean_phone[1:]
+        elif clean_phone.startswith('7') and len(clean_phone) == 9:
+            clean_phone = '967' + clean_phone
+        elif clean_phone.startswith('00'):
+            clean_phone = clean_phone[2:]
+
+        # 4. إعداد الإرسال للجسر (Node.js Bridge)
+        url = f"{WHATSAPP_URL}/api/message/send"
+        
+        payload = {
+            "storeId": str(store_id),
+            "customerPhone": clean_phone, 
+            "text": text
+        }
+        
+        async with httpx.AsyncClient() as client:
+            logger.info(f"🚀 توجيه الطلب للجسر: {clean_phone} | المتجر: {store_id}")
+            response = await client.post(url, json=payload, timeout=20.0)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ نجح توجيه الرد للرقم: {clean_phone}")
+                return True
+            else:
+                logger.error(f"❌ خطأ من الجسر ({response.status_code}): {response.text}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"❌ فشل الاتصال بخدمة الواتساب (Node): {str(e)}")
+        return False
+
 
 # ========================================================
 # --- 3. روابط الـ API (Endpoints) ---
@@ -305,22 +359,6 @@ async def message_worker():
 # طابور الرسائل يبقى كما هو
 message_queue = asyncio.Queue()
 
-async def whatsapp_worker():
-    """عامل خلفية لمعالجة الرسائل من الطابور دون تعطيل الـ Webhook"""
-    while True:
-        # جلب المهمة التالية من الطابور
-        task = await message_queue.get()
-        store_id, phone, message = task
-        
-        try:
-            # استدعاء دالة الإرسال التي جهزناها سابقاً
-            success = await send_whatsapp_message(store_id, phone, message)
-            if success:
-                logger.info(f"✅ تم معالجة الرسالة لـ {phone} من الطابور")
-        except Exception as e:
-            logger.error(f"❌ خطأ في عامل الـ WhatsApp: {e}")
-        finally:
-            message_queue.task_done()
 
 # لا تنسى تشغيل العامل عند بدء تشغيل FastAPI
 
@@ -379,163 +417,16 @@ async def handle_node_incoming(request: Request, background_tasks: BackgroundTas
         logger.error(f"❌ Error in handle_node_incoming: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-def monitor_output(process, store_id):
-    for line in iter(process.stdout.readline, ''):
-        print(f"DEBUG NODE: {line.strip()}") # أضف هذا السطر لمشاهدة الخطأ
-        # ... بقية الكود
-
-    """
-    مراقب مخرجات عملية Node.js:
-    يقوم بالتقاط الباركود، حالة الاتصال، والرسائل الواردة وتمريرها للمعالجة.
-    """
-    # قراءة المخرجات سطر بسطر من عملية الجسر (wa-bridge.js)
-    for line in iter(process.stdout.readline, ''):
-        line = line.strip()
-        if not line:
-            continue
-
-        # 1. حالة استلام باركود جديد
-        if "QR_DATA_START:" in line:
-            try:
-                qr_code = line.split("QR_DATA_START:")[1].split(":QR_DATA_END")[0]
-                latest_qrs[store_id] = qr_code
-                logger.info(f"✨ [QR] New code generated for Store: {store_id}")
-            except Exception as e:
-                logger.error(f"❌ Error parsing QR: {e}")
-
-        # 2. حالة نجاح فتح الجلسة (سواء لأول مرة أو استعادة من القاعدة)
-        elif "SESSION_OPENED" in line:
-            latest_qrs[store_id] = "CONNECTED"
-            logger.info(f"✅ [AUTH] Store {store_id} is now ONLINE (Postgres Session)")
-
-        # 3. حالة استلام رسالة جديدة من عميل (التمرير للذكاء الاصطناعي)
-        elif "NEW_MSG|" in line:
-            try:
-                # التنسيق المتوقع من wa-bridge.js هو: NEW_MSG|sender_phone|message_text
-                parts = line.split("|")
-                if len(parts) >= 3:
-                    sender_phone = parts[1]
-                    message_text = "|".join(parts[2:]) # لضمان عدم ضياع النص لو احتوى على |
-                    
-                    logger.info(f"📩 [INCOMING] From {sender_phone} @ {store_id}: {message_text}")
-                    
-                    # تمرير الرسالة لمعالج الذكاء الاصطناعي في الخلفية
-                    # نستخدم run_coroutine_threadsafe لأن هذه الدالة تعمل في Thread مستقل
-                    asyncio.run_coroutine_threadsafe(
-                        process_customer_request(store_id, sender_phone, message_text),
-                        asyncio.get_event_loop()
-                    )
-            except Exception as e:
-                logger.error(f"❌ Error routing incoming message: {e}")
-
-        # 4. تأكيد إرسال رسالة (Outbound Confirmation)
-        elif "SENT_CONFIRMATION:" in line:
-            recipient = line.split("SENT_CONFIRMATION:")[1]
-            logger.info(f"📤 [SENT] Message delivered to {recipient} via Store {store_id}")
-
-        # 5. تسجيل أخطاء Node.js العامة
-        elif "CRITICAL_NODE_ERROR" in line:
-            logger.error(f"🚨 [NODE CRITICAL] {line}")
-
-# تحديد مسار حفظ بيانات الجلسة (سيتم إنشاء مجلد في نفس مسار السكربت)
-
-
-
-
-# استدعِ الدالة قبل البدء بطلب باركود جديد
-
-
-
-
-# 🚦 التحكم في تدفق الموارد لحماية الرام في Render
-# نضبطه على 1 لضمان عدم انهيار السيرفر نهائياً (يسمح بفتح متصفح واحد فقط في نفس اللحظة للربط)
-
-
-
 
 
 # ========================================================
 # الجسر السحري (Alias) للحفاظ على توافقية بقية الكود
 # ========================================================
 
-async def ensure_browser_ready(store_id: str):
-    """
-    دالة توجيهية: تم دمج منطقها مع get_handler_for_store.
-    هذه الدالة موجودة فقط لكي لا يحدث أي خطأ (ImportError أو NameError) 
-    في بقية الملفات التي تعتمد على هذا الاسم.
-    """
-    return await get_handler_for_store(store_id)
 
 
 
 
-
-async def on_new_message_logic(payload):
-    """
-    دالة للبحث عن المحادثات غير المقروءة، الضغط عليها، استخراج النص، والرد.
-    """
-    # استخراج معرف المتجر من الـ payload (تأكد من مطابقة المفتاح لبياناتك)
-    store_id = payload.get("store_id", "default_store") 
-    logger.info(f"🔍 بدء فحص الرسائل الجديدة للمتجر: {store_id}")
-    
-    try:
-        # 1. جلب الصفحة المفتوحة الخاصة بهذا المتجر
-        page = await get_handler_for_store(store_id)
-        
-        # 2. محددات (Selectors) البحث عن الرسائل غير المقروءة باللغتين العربية والإنجليزية
-        unread_selector = 'span[aria-label*="غير مقروء"], span[aria-label*="unread"]'
-        
-        # الانتظار لمدة 5 ثوانٍ للتحقق من وجود أي رسالة جديدة
-        try:
-            await page.wait_for_selector(unread_selector, timeout=5000)
-        except:
-            logger.info("📭 لا توجد محادثات غير مقروءة حالياً.")
-            return
-
-        # جلب جميع المحادثات غير المقروءة
-        unread_elements = await page.locator(unread_selector).all()
-        
-        # 3. المرور على المحادثات الجديدة واحدة تلو الأخرى
-        for unread in unread_elements:
-            try:
-                # الضغط على المحادثة لفتحها
-                await unread.click()
-                await asyncio.sleep(1.5)  # انتظار بسيط لضمان تحميل المحادثة بالكامل
-                
-                # 4. استخراج اسم أو رقم العميل من رأس الصفحة (Header)
-                header_title = page.locator('header span[title]').first
-                customer_info = await header_title.get_attribute("title") if await header_title.count() > 0 else "غير معروف"
-                
-                # 5. استخراج آخر رسالة مستلمة (نبحث في الرسائل الواردة إلينا فقط 'message-in')
-                last_msg_locator = page.locator('div.message-in span.selectable-text').last
-                
-                if await last_msg_locator.count() > 0:
-                    message_text = await last_msg_locator.inner_text()
-                    logger.info(f"✅ رسالة جديدة من [{customer_info}]: {message_text}")
-                    
-                    # ==========================================
-                    # 6. تمرير النص للذكاء الاصطناعي وتجهيز الرد
-                    # ==========================================
-                    # هنا نربط مع دالة GROQ التي كتبناها سابقاً
-                    # ai_reply = await process_customer_request(store_id, customer_info, message_text)
-                    
-                    # نص تجريبي مؤقت للتأكد من عمل الكود:
-                    ai_reply = f"أهلاً بك، استلمت رسالتك: '{message_text}'. جاري معالجتها..."
-                    
-                    # 7. كتابة الرد في صندوق المحادثة وإرساله
-                    chat_input = page.locator('div[contenteditable="true"][data-tab="10"], div[contenteditable="true"][title="كتب رسالة"]')
-                    await chat_input.fill(ai_reply)
-                    await page.keyboard.press("Enter")
-                    
-                    logger.info(f"📤 تم الرد على [{customer_info}] بنجاح.")
-                    await asyncio.sleep(1) # فاصل زمني لتجنب حظر واتساب
-                
-            except Exception as inner_e:
-                logger.error(f"⚠️ خطأ أثناء التعامل مع محادثة {customer_info}: {inner_e}")
-                continue
-
-    except Exception as e:
-        logger.error(f"❌ خطأ عام في دالة on_new_message_logic: {e}")
 
 
 
@@ -545,49 +436,6 @@ async def on_new_message_logic(payload):
 # داخل دالة فتح الصفحة
 
 
-
-
-def extract_intent(user_message: str) -> str:
-    try:
-        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        
-        prompt = f"""
-        Analyze the following Arabic message and classify the user's intent into EXACTLY ONE of the following English words:
-        - 'inquiry' (asking about a product, price, or general question)
-        - 'complaint' (angry, unhappy, wrong item, damage)
-        - 'tracking' (asking about order status, delivery time, where is my order)
-        - 'other' (anything else)
-        
-        Output ONLY the category word. No explanation.
-        Message: "{user_message}"
-        """
-        
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="llama3-8b-8192", # استخدام موديل صغير وسريع جداً لهذه المهمة
-            temperature=0.1, # حرارة منخفضة جداً لضمان دقة الكلمة
-            max_tokens=10,
-        )
-        
-        intent = chat_completion.choices[0].message.content.strip().lower()
-        
-        # التأكد من أن النتيجة من ضمن الخيارات المتوقعة
-        valid_intents = ['inquiry', 'complaint', 'tracking']
-        return intent if intent in valid_intents else 'other'
-        
-    except Exception as e:
-        print(f"Intent Extraction Error: {e}")
-        return "other"
-
-# ملاحظة: في دالة الـ Webhook الأساسية التي تستقبل رسائل الواتساب:
-# 1. استدعِ extract_intent(message_body)
-# 2. احفظ الناتج (intent) في جدول المحادثات (recent_activity) في قاعدة البيانات.
-# 3. عندما يطلب الـ Frontend دالة loadDashboard، تأكد أن يتم إرجاع حقل 'intent' مع كل محادثة.
 
 
 
@@ -657,54 +505,6 @@ async def salla_request(method: str, endpoint: str, store_id: str, payload: dict
         logger.error(f"❌ خطأ غير متوقع في salla_request: {str(e)}")
         return None
 
-async def refresh_salla_token(store_id: str) -> Optional[str]:
-    """تجديد التوكن وتحديث كلا الحقلين في قاعدة البيانات لضمان التطابق"""
-    try:
-        # جلب الـ refresh_token فقط من القاعدة
-        query = "SELECT refresh_token FROM store_settings WHERE store_id = :sid"
-        row = execute_db_query(query, {"sid": store_id}, fetch="one")
-        
-        if not row or not row[0]:
-            logger.error(f"❌ لا يوجد refresh_token للمتجر {store_id}")
-            return None
-        
-        url = "https://accounts.salla.sa/oauth2/token"
-        payload = {
-            "client_id": os.getenv("SALLA_CLIENT_ID"),
-            "client_secret": os.getenv("SALLA_CLIENT_SECRET"),
-            "grant_type": "refresh_token",
-            "refresh_token": row[0]
-        }
-        
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, data=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                new_access = data["salla_access_token"]
-                new_refresh = data["refresh_token"]
-
-                # تحديث الحقلين (salla_access_token و access_token) معاً ليكونوا "نفس بعض"
-                update_query = """
-                    UPDATE store_settings 
-                    SET salla_access_token = :access, 
-                        access_token = :access, 
-                        refresh_token = :refresh, 
-                        updated_at = NOW() 
-                    WHERE store_id = :sid
-                """
-                execute_db_query(update_query, {
-                    "access": new_access,
-                    "refresh": new_refresh,
-                    "sid": store_id
-                })
-                logger.info(f"✅ تم تجديد وتوحيد التوكنات للمتجر {store_id} بنجاح.")
-                return new_access
-            else:
-                logger.error(f"❌ فشل تجديد التوكن من سلة: {resp.text}")
-                return None
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء عملية التجديد: {e}")
-        return None
 async def refresh_salla_token(store_id: str) -> Optional[str]:
     """
     تجديد التوكن وتحديث الحقلين (salla_access_token و access_token) معاً لضمان التطابق.
@@ -834,6 +634,79 @@ async def get_salla_order(order_id: str, store_id: str):
         logger.error(f"❌ خطأ في get_salla_order للمتجر {store_id}: {str(e)}")
         return "حصل عندي خطأ بسيط أثناء فحص تفاصيل الطلب، جرب مرة أخرى لاحقاً.", None
 
+
+async def update_store_knowledge_base(store_id):
+    try:
+        # 1. جلب التوكن من جدول store_settings
+        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
+        row = execute_db_query(query, {"sid": store_id}, fetch="one")
+
+        if not row or not row[0]:
+            return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة"
+
+        salla_access_token = row[0]
+
+        # 2. جلب المنتجات من سلة مع تفاصيلها
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {salla_access_token}"}
+            # جلب أول 50 منتج لضمان تغطية جيدة للمتجر
+            salla_url = "https://api.salla.dev/admin/v2/products?per_page=50"
+            response = await client.get(salla_url, headers=headers)
+            
+            if response.status_code != 200:
+                return f"❌ فشل الاتصال بسلة: {response.status_code}"
+                
+            products = response.json().get("data", [])
+
+        if not products:
+            return "⚠️ لا توجد منتجات في المتجر لتحديث الذاكرة."
+
+        # 3. معالجة بيانات المنتجات (الاسم، السعر، الوصف)
+        detailed_products = []
+        for p in products:
+            name = p.get('name', 'بدون اسم')
+            # استخراج السعر بمرونة (سواء كان كائن أو رقم مباشر)
+            price_data = p.get('price', {})
+            price = price_data.get('amount', '') if isinstance(price_data, dict) else price_data
+            currency = price_data.get('currency', 'ر.س') if isinstance(price_data, dict) else 'ر.س'
+            
+            description = p.get('description', '')
+            # تنظيف الوصف من وسوم HTML وتقليص الطول لتوفير الـ Tokens
+            clean_description = re.sub('<[^<]+?>', '', description)[:100]
+            
+            detailed_products.append(f"- {name} | السعر: {price} {currency} | {clean_description}")
+
+        # تحويل القائمة إلى نص واحد كبير ليكون سياقاً للذكاء الاصطناعي
+        context = "\n".join(detailed_products)
+        
+        # 4. طلب صياغة الـ System Prompt بناءً على البيانات
+        prompt_to_groq = f"""
+        أنت مساعد ذكي لمتجر سلة. لقد تم تزويدك بقائمة المنتجات التالية وأسعارها:
+        {context}
+        
+        بناءً على هذه البيانات، صغ System Prompt احترافي للبوت يجعله قادراً على:
+        1. الإجابة بدقة عن أسعار المنتجات المذكورة.
+        2. وصف المنتجات للعملاء بأسلوب جذاب.
+        3. الالتزام باللهجة السعودية الودودة والترحيب بالعميل.
+        """
+        
+        # نستخدم دالة التوليد (Generate) لإنتاج نص تعليمي
+        new_ai_instruction = await groq_generate_reply([], context, prompt_to_groq)
+
+        # 5. معالجة الرد لضمان توافقه مع قاعدة البيانات (تحويل Dict إلى String)
+        if isinstance(new_ai_instruction, dict):
+            new_ai_instruction = json.dumps(new_ai_instruction, ensure_ascii=False)
+
+        # 6. تحديث قاعدة البيانات بالتعليمات الجديدة
+        update_query = "UPDATE store_settings SET system_prompt = :prompt WHERE store_id = :sid"
+        execute_db_query(update_query, {"prompt": new_ai_instruction, "sid": store_id})
+
+        return "✅ تم تحديث ذكاء البوت بنجاح ببيانات المنتجات والأسعار!"
+
+    except Exception as e:
+        logger.error(f"Error in update_store_knowledge: {e}")
+        return f"❌ حدث خطأ: {str(e)}"
+
 # --- خدمات الذكاء الاصطناعي (GROQ xAI) ---
 
 async def groq_analyze_intent(message: str) -> dict:
@@ -961,6 +834,51 @@ async def groq_generate_reply(history: List[Dict], context: str, system_prompt: 
             logger.error(f"❌ Critical Error in AI module: {str(e)}")
             return "يا هلا بك، حصل عندي عطل بسيط. ممكن تعيد إرسال رسالتك؟"
 
+
+def extract_intent(user_message: str) -> str:
+    try:
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        
+        prompt = f"""
+        Analyze the following Arabic message and classify the user's intent into EXACTLY ONE of the following English words:
+        - 'inquiry' (asking about a product, price, or general question)
+        - 'complaint' (angry, unhappy, wrong item, damage)
+        - 'tracking' (asking about order status, delivery time, where is my order)
+        - 'other' (anything else)
+        
+        Output ONLY the category word. No explanation.
+        Message: "{user_message}"
+        """
+        
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="llama3-8b-8192", # استخدام موديل صغير وسريع جداً لهذه المهمة
+            temperature=0.1, # حرارة منخفضة جداً لضمان دقة الكلمة
+            max_tokens=10,
+        )
+        
+        intent = chat_completion.choices[0].message.content.strip().lower()
+        
+        # التأكد من أن النتيجة من ضمن الخيارات المتوقعة
+        valid_intents = ['inquiry', 'complaint', 'tracking']
+        return intent if intent in valid_intents else 'other'
+        
+    except Exception as e:
+        print(f"Intent Extraction Error: {e}")
+        return "other"
+
+# ملاحظة: في دالة الـ Webhook الأساسية التي تستقبل رسائل الواتساب:
+# 1. استدعِ extract_intent(message_body)
+# 2. احفظ الناتج (intent) في جدول المحادثات (recent_activity) في قاعدة البيانات.
+# 3. عندما يطلب الـ Frontend دالة loadDashboard، تأكد أن يتم إرجاع حقل 'intent' مع كل محادثة.
+
+
+
 # --- خدمات واتساب (WhatsApp Business API) ---
 
 # ... (نفس التعريفات السابقة) ...
@@ -995,63 +913,6 @@ async def send_via_web_bridge(store_id: str, phone: str, text: str):
     return False
 
 
-async def send_to_whatsapp_node(store_id: str, phone: str, text: str):
-    """
-    إرسال الرسالة إلى جسر Node.js مع تنظيف الرقم، توحيد الصيغة الدولية،
-    والتحقق من جدول الربط (Mapping) لضمان الإرسال للرقم الحقيقي.
-    """
-    try:
-        # 1. التحقق أولاً: هل الرقم الممرر هو LID (مثل 257...)؟
-        # إذا كان كذلك، نحاول جلب الرقم الحقيقي من قاعدة البيانات قبل الإرسال
-        verified_phone = phone
-        try:
-            # نبحث في جدول الربط الذي أنشأناه
-            mapping_query = "SELECT real_phone FROM phone_mappings WHERE lid = :lid AND store_id = :sid LIMIT 1"
-            mapping_res = execute_db_query(mapping_query, {"lid": str(phone), "sid": str(store_id)}, fetch="one")
-            if mapping_res:
-                verified_phone = str(mapping_res[0])
-                logger.info(f"🔗 [Outgoing Mapping] Routing reply from LID {phone} to Real Phone {verified_phone}")
-        except Exception as e:
-            logger.error(f"⚠️ Error checking mapping for outgoing: {e}")
-
-        # 2. تنظيف الرقم من أي رموز غير رقمية
-        clean_phone = re.sub(r'\D', '', str(verified_phone))
-        
-        # 3. منطق تصحيح الأرقام (السعودية واليمن) لضمان الصيغة الدولية
-        if clean_phone.startswith('05') and len(clean_phone) == 10:
-            clean_phone = '966' + clean_phone[1:]
-        elif clean_phone.startswith('5') and len(clean_phone) == 9:
-            clean_phone = '966' + clean_phone
-        elif clean_phone.startswith('07') and len(clean_phone) == 10:
-            clean_phone = '967' + clean_phone[1:]
-        elif clean_phone.startswith('7') and len(clean_phone) == 9:
-            clean_phone = '967' + clean_phone
-        elif clean_phone.startswith('00'):
-            clean_phone = clean_phone[2:]
-
-        # 4. إعداد الإرسال للجسر (Node.js Bridge)
-        url = f"{WHATSAPP_URL}/api/message/send"
-        
-        payload = {
-            "storeId": str(store_id),
-            "customerPhone": clean_phone, 
-            "text": text
-        }
-        
-        async with httpx.AsyncClient() as client:
-            logger.info(f"🚀 توجيه الطلب للجسر: {clean_phone} | المتجر: {store_id}")
-            response = await client.post(url, json=payload, timeout=20.0)
-            
-            if response.status_code == 200:
-                logger.info(f"✅ نجح توجيه الرد للرقم: {clean_phone}")
-                return True
-            else:
-                logger.error(f"❌ خطأ من الجسر ({response.status_code}): {response.text}")
-                return False
-                
-    except Exception as e:
-        logger.error(f"❌ فشل الاتصال بخدمة الواتساب (Node): {str(e)}")
-        return False
 
 async def get_merchant_stats(store_id: str):
     """جلب إحصائيات المتجر من سلة باستخدام PostgreSQL لجلب التوكن"""
@@ -1412,77 +1273,6 @@ async def search_salla_products(query: str, store_id: str) -> str:
 
 
 
-async def update_store_knowledge_base(store_id):
-    try:
-        # 1. جلب التوكن من جدول store_settings
-        query = "SELECT salla_access_token FROM store_settings WHERE store_id = :sid LIMIT 1"
-        row = execute_db_query(query, {"sid": store_id}, fetch="one")
-
-        if not row or not row[0]:
-            return "❌ خطأ: لم يتم العثور على توكن الربط الخاص بسلة"
-
-        salla_access_token = row[0]
-
-        # 2. جلب المنتجات من سلة مع تفاصيلها
-        async with httpx.AsyncClient() as client:
-            headers = {"Authorization": f"Bearer {salla_access_token}"}
-            # جلب أول 50 منتج لضمان تغطية جيدة للمتجر
-            salla_url = "https://api.salla.dev/admin/v2/products?per_page=50"
-            response = await client.get(salla_url, headers=headers)
-            
-            if response.status_code != 200:
-                return f"❌ فشل الاتصال بسلة: {response.status_code}"
-                
-            products = response.json().get("data", [])
-
-        if not products:
-            return "⚠️ لا توجد منتجات في المتجر لتحديث الذاكرة."
-
-        # 3. معالجة بيانات المنتجات (الاسم، السعر، الوصف)
-        detailed_products = []
-        for p in products:
-            name = p.get('name', 'بدون اسم')
-            # استخراج السعر بمرونة (سواء كان كائن أو رقم مباشر)
-            price_data = p.get('price', {})
-            price = price_data.get('amount', '') if isinstance(price_data, dict) else price_data
-            currency = price_data.get('currency', 'ر.س') if isinstance(price_data, dict) else 'ر.س'
-            
-            description = p.get('description', '')
-            # تنظيف الوصف من وسوم HTML وتقليص الطول لتوفير الـ Tokens
-            clean_description = re.sub('<[^<]+?>', '', description)[:100]
-            
-            detailed_products.append(f"- {name} | السعر: {price} {currency} | {clean_description}")
-
-        # تحويل القائمة إلى نص واحد كبير ليكون سياقاً للذكاء الاصطناعي
-        context = "\n".join(detailed_products)
-        
-        # 4. طلب صياغة الـ System Prompt بناءً على البيانات
-        prompt_to_groq = f"""
-        أنت مساعد ذكي لمتجر سلة. لقد تم تزويدك بقائمة المنتجات التالية وأسعارها:
-        {context}
-        
-        بناءً على هذه البيانات، صغ System Prompt احترافي للبوت يجعله قادراً على:
-        1. الإجابة بدقة عن أسعار المنتجات المذكورة.
-        2. وصف المنتجات للعملاء بأسلوب جذاب.
-        3. الالتزام باللهجة السعودية الودودة والترحيب بالعميل.
-        """
-        
-        # نستخدم دالة التوليد (Generate) لإنتاج نص تعليمي
-        new_ai_instruction = await groq_generate_reply([], context, prompt_to_groq)
-
-        # 5. معالجة الرد لضمان توافقه مع قاعدة البيانات (تحويل Dict إلى String)
-        if isinstance(new_ai_instruction, dict):
-            new_ai_instruction = json.dumps(new_ai_instruction, ensure_ascii=False)
-
-        # 6. تحديث قاعدة البيانات بالتعليمات الجديدة
-        update_query = "UPDATE store_settings SET system_prompt = :prompt WHERE store_id = :sid"
-        execute_db_query(update_query, {"prompt": new_ai_instruction, "sid": store_id})
-
-        return "✅ تم تحديث ذكاء البوت بنجاح ببيانات المنتجات والأسعار!"
-
-    except Exception as e:
-        logger.error(f"Error in update_store_knowledge: {e}")
-        return f"❌ حدث خطأ: {str(e)}"
 
 # --- 2. تحديث محلل النية (Intent Analyzer) ليدعم المنتجات ---
 # --- 3. المعالج الرئيسي المحدث (process_customer_request) ---
@@ -1573,6 +1363,7 @@ async def process_customer_request(store_id: str, phone: str, text: str):
 
     except Exception as e:
         logger.error(f"❌ Error in process_customer_request: {str(e)}")
+
 
 @app.api_route("/webhook/salla", methods=["GET", "POST"]) # تعديل هنا للسماح بـ GET و POST
 async def handle_salla_event(request: Request, background_tasks: BackgroundTasks):
@@ -1909,7 +1700,8 @@ async def get_dashboard_data(store_id: str):
         LIMIT 50
     """
     # تأكد من تحويل النتيجة إلى Dictionary لكي يفهمها الفرونت إند
-    result = db.execute(query, {"sid": store_id}).fetchall()
+    result = execute_db_query(query, {"sid": store_id}, fetch="all")
+
     
     # تحويل الصفوف إلى تنسيق JSON متوافق
     recent_activity = [
@@ -1990,28 +1782,6 @@ async def fetch_qr(store_id: str):
     return {"status": "error", "message": "فشل في توليد الباركود، حاول مجدداً"}
 
 # 2. دالة كود الربط (Pairing Code)
-
-async def send_whatsapp_message(phone: str, message: str, store_id: str):
-    # إعداد البيانات للـ Evolution API
-    url = f"{WHATSAPP_URL}/message/sendText/{store_id}"
-    headers = {
-        "apikey": WHATSAPP_API_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "number": phone, # يجب أن يكون الرقم بالصيغة الدولية بدون +
-        "options": {"delay": 1200, "presence": "composing"},
-        "textMessage": {"text": message}
-    }
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=payload, headers=headers)
-        if response.status_code == 201:
-            print("✅ تم إرسال الرسالة بنجاح")
-            return True
-        else:
-            print(f"❌ فشل الإرسال: {response.text}")
-            return False
 
 # تأكد من استيراد هذا
 
