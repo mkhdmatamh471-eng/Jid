@@ -1888,6 +1888,43 @@ async def get_advanced_analytics(store_id: str):
         return {"status": "error", "message": str(e)}
 
 
+
+@app.get("/api/dashboard/{store_id}")
+async def get_dashboard_data(store_id: str):
+    # استخدام الاستعلام مع التصفية بـ store_id لمنع الاختلاط
+    query = """
+        SELECT 
+            content, 
+            role, 
+            customer_phone, 
+            intent, 
+            created_at 
+        FROM conversations 
+        WHERE store_id = :sid 
+        ORDER BY created_at DESC 
+        LIMIT 50
+    """
+    # تأكد من تحويل النتيجة إلى Dictionary لكي يفهمها الفرونت إند
+    result = db.execute(query, {"sid": store_id}).fetchall()
+    
+    # تحويل الصفوف إلى تنسيق JSON متوافق
+    recent_activity = [
+        {
+            "content": row[0],
+            "role": row[1],
+            "customer_phone": row[2],
+            "intent": row[3],
+            "created_at": row[4].isoformat() if row[4] else None
+        } for row in result
+    ]
+    
+    return {
+        "recent_activity": recent_activity,
+        "store_id": store_id
+    }
+
+
+
 @app.post("/admin/update-config/{store_id}")
 async def update_config(store_id: str, settings: dict):
     """تحديث إعدادات المسؤول والبرومبت من لوحة التحكم"""
