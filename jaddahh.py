@@ -965,30 +965,34 @@ async def groq_generate_reply(history: List[Dict], context: str, system_prompt: 
 
 # ... (نفس التعريفات السابقة) ...
 
-# تعديل دالة send_whatsapp_dynamic لتستخدم الـ Web Bridge
 async def send_whatsapp_dynamic(store_id: str, phone: str, text: str):
     """
     محاولة الإرسال عبر المتصفح المفتوح (Web Bridge).
-    إذا لم يكن المتصفح جاهزاً، يتم تسجيل خطأ.
     """
     try:
-        logger.info(f"Sending message to {phone} via Web Bridge...")
-        await send_via_web_bridge(phone, text)
+        logger.info(f"🔄 جاري الإرسال إلى {phone} للمتجر {store_id}...")
+        
+        # الإصلاح: تمرير الـ store_id كأول معامل كما هو معرف في الدالة بالأسفل
+        await send_via_web_bridge(store_id, phone, text)
+        
     except Exception as e:
-        logger.error(f"Failed to send via Web Bridge: {str(e)}")
+        logger.error(f"❌ فشل الإرسال عبر Web Bridge: {str(e)}")
 
-# تحسين دالة send_via_web_bridge لتكون أكثر ذكاءً
+# الدالة كما هي، لكن تأكد من ترتيب المعاملات عند الاستدعاء
 async def send_via_web_bridge(store_id: str, phone: str, text: str):
     """
     يرسل الرسالة عبر Baileys API مباشرة
     """
     handler = await get_handler_for_store(store_id)
+    if not handler:
+        logger.error(f"⚠️ لم يتم العثور على Handler للمتجر: {store_id}")
+        return False
+        
     success = await handler.send_text(phone, text)
     if success:
         logger.info(f"✅ تم الإرسال للمتجر {store_id} عبر Baileys")
         return True
     return False
-
 
 
 async def send_to_whatsapp_node(store_id: str, phone: str, text: str):
