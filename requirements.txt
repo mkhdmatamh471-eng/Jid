@@ -13,6 +13,7 @@ supabase
 # أزلنا التحديد القاسي هنا لحل صراع supabase
 httpx
 aiofiles
+groq
 requests
 
 # القوالب والبيئة
