@@ -373,33 +373,26 @@ function showToast(msg, isSuccess = true) {
 
 // التبديل بين وضع الباركود ووضع كود الربط
 function switchLinkMode(mode) {
-    const tabQr = document.getElementById('tabQr');
-    const tabCode = document.getElementById('tabCode');
     const modeQr = document.getElementById('modeQr');
     const modeCode = document.getElementById('modeCode');
+    const tabQr = document.getElementById('tabQr');
+    const tabCode = document.getElementById('tabCode');
 
     if (mode === 'qr') {
-        tabQr.classList.replace('text-gray-500', 'text-gray-900');
-        tabQr.classList.replace('bg-transparent', 'bg-white');
-        tabQr.classList.add('shadow-sm');
-
-        tabCode.classList.replace('text-gray-900', 'text-gray-500');
-        tabCode.classList.remove('bg-white', 'shadow-sm');
-
         modeQr.classList.remove('hidden');
         modeCode.classList.add('hidden');
+        // تحديث ألوان الأزرار
+        tabQr.className = "flex-1 py-2 text-sm font-bold rounded-md bg-white shadow-sm text-gray-900 transition";
+        tabCode.className = "flex-1 py-2 text-sm font-bold rounded-md text-gray-500 hover:text-gray-900 transition";
     } else {
-        tabCode.classList.replace('text-gray-500', 'text-gray-900');
-        tabCode.classList.replace('bg-transparent', 'bg-white');
-        tabCode.classList.add('shadow-sm');
-
-        tabQr.classList.replace('text-gray-900', 'text-gray-500');
-        tabQr.classList.remove('bg-white', 'shadow-sm');
-
-        modeCode.classList.remove('hidden');
         modeQr.classList.add('hidden');
+        modeCode.classList.remove('hidden');
+        // تحديث ألوان الأزرار
+        tabCode.className = "flex-1 py-2 text-sm font-bold rounded-md bg-white shadow-sm text-gray-900 transition";
+        tabQr.className = "flex-1 py-2 text-sm font-bold rounded-md text-gray-500 hover:text-gray-900 transition";
     }
 }
+
 
 // توليد QR Code
 async function refreshQR() {
@@ -515,7 +508,6 @@ function copyPairingCode() {
 
 
 // متغير لتخزين المحادثات محلياً لتسهيل الفلترة بدون طلب السيرفر كل مرة
-let globalChatsData = [];
 
 // تحديث دالة عرض المحادثات
 function renderChatsTable(chats) {
@@ -602,7 +594,13 @@ async function takeoverChat(phone) {
 /* --- 3. مختبر الذكاء والإعدادات --- */
 function togglePlayground() {
     const modal = document.getElementById('aiPlayground');
-    modal.classList.toggle('hidden');
+    if (modal.classList.contains('hidden')) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+    } else {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+    }
 }
 
 async function sendTestMessage() {
