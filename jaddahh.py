@@ -5,6 +5,8 @@ import shutil
 import tarfile
 import uvicorn
 import re
+from groq import Groq
+from datetime import datetime, timedelta
 import json
 import qrcode
 import shutil
@@ -20,7 +22,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import base64
 import httpx
-from datetime import datetime
 from typing import List, Dict, Optional
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from supabase import create_client, Client
@@ -31,7 +32,6 @@ from datetime import datetime, timedelta
 import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from datetime import datetime, timedelta
 import logging
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
@@ -542,6 +542,53 @@ async def on_new_message_logic(payload):
 # await page.route("**/*", block_useless_resources)
 
 # داخل دالة فتح الصفحة
+
+
+
+
+def extract_intent(user_message: str) -> str:
+    try:
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        
+        prompt = f"""
+        Analyze the following Arabic message and classify the user's intent into EXACTLY ONE of the following English words:
+        - 'inquiry' (asking about a product, price, or general question)
+        - 'complaint' (angry, unhappy, wrong item, damage)
+        - 'tracking' (asking about order status, delivery time, where is my order)
+        - 'other' (anything else)
+        
+        Output ONLY the category word. No explanation.
+        Message: "{user_message}"
+        """
+        
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="llama3-8b-8192", # استخدام موديل صغير وسريع جداً لهذه المهمة
+            temperature=0.1, # حرارة منخفضة جداً لضمان دقة الكلمة
+            max_tokens=10,
+        )
+        
+        intent = chat_completion.choices[0].message.content.strip().lower()
+        
+        # التأكد من أن النتيجة من ضمن الخيارات المتوقعة
+        valid_intents = ['inquiry', 'complaint', 'tracking']
+        return intent if intent in valid_intents else 'other'
+        
+    except Exception as e:
+        print(f"Intent Extraction Error: {e}")
+        return "other"
+
+# ملاحظة: في دالة الـ Webhook الأساسية التي تستقبل رسائل الواتساب:
+# 1. استدعِ extract_intent(message_body)
+# 2. احفظ الناتج (intent) في جدول المحادثات (recent_activity) في قاعدة البيانات.
+# 3. عندما يطلب الـ Frontend دالة loadDashboard، تأكد أن يتم إرجاع حقل 'intent' مع كل محادثة.
+
+
 
 
 async def salla_request(method: str, endpoint: str, store_id: str, payload: dict = None):
@@ -2064,6 +2111,25 @@ async def test_ai(store_id: str, data: dict):
     except Exception as e:
         logger.error(f"Test AI Error: {str(e)}")
         return {"reply": f"خطأ في النظام: {str(e)}"}
+
+
+
+# دالة سريعة لتحليل النية
+
+
+# افترض أن لديك راوتر أو تطبيق FastAPI
+@app.post("/api/chat/stop-bot/{store_id}/{phone}")
+async def stop_bot_for_user(store_id: str, phone: str):
+    try:
+        # حساب وقت الإيقاف (مثلاً لمدة ساعة من الآن)
+        pause_until = datetime.utcnow() + timedelta(hours=1)
+        
+        # هنا ستقوم بتحديث قاعدة بياناتك (مثال باستخدام Supabase)
+        # response = supabase.table('customers').update({'bot_paused_until': pause_until.isoformat()}).eq('store_id', store_id).eq('phone_number', phone).execute()
+        
+        return {"status": "success", "message": f"Bot paused for {phone} until {pause_until}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ... (بقية الكود الخاص بك) ...
