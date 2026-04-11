@@ -2177,8 +2177,13 @@ async def test_ai(store_id: str, data: dict):
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     file_path = "index.html"
+    
+    # التأكد من وجود المكتبات المطلوبة في أعلى الملف: 
+    # import os
+    # from fastapi.responses import FileResponse, HTMLResponse
+    
     if os.path.exists(file_path):
-        # إضافة ترويسات لمنع التخزين المؤقت (Cache-Control) لضمان رؤية التعديلات الجديدة
+        # ترويسات لمنع التخزين المؤقت لضمان تحديث التعديلات في المتصفح فوراً
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
@@ -2186,9 +2191,14 @@ async def read_index():
         }
         return FileResponse(file_path, headers=headers)
     else:
-        logger.error("❌ ملف index.html غير موجود!")
-        return HTMLResponse(content="<h1>خطأ: ملف واجهة المستخدم مفقود</h1>", status_code=404)
-"<h1>خطأ: ملف واجهة المستخدم مفقود</h1>", status_code=404)
+        # تسجيل الخطأ في السيرفر وإرجاع رسالة واضحة للمستخدم
+        if 'logger' in globals():
+            logger.error("❌ ملف index.html غير موجود في المسار الرئيسي!")
+            
+        return HTMLResponse(
+            content="<h1>خطأ: ملف واجهة المستخدم (index.html) مفقود</h1>", 
+            status_code=404
+        )
 
 @app.get("/health")
 def health_check():
