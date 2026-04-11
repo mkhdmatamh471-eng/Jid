@@ -12,6 +12,7 @@ import qrcode
 import shutil
 import qrcode
 from io import BytesIO
+from fastapi.responses import FileResponse, HTMLResponse
 import json
 import logging
 import asyncio
@@ -1974,6 +1975,19 @@ async def send_whatsapp_message(phone: str, message: str, store_id: str):
 # تأكد من استيراد هذا
 
 
+@app.post("/api/chat/stop-bot/{store_id}/{phone}")
+async def stop_bot_for_user(store_id: str, phone: str):
+    try:
+        # حساب وقت الإيقاف (مثلاً لمدة ساعة من الآن)
+        pause_until = datetime.utcnow() + timedelta(hours=1)
+        
+        # هنا ستقوم بتحديث قاعدة بياناتك (مثال باستخدام Supabase)
+        # response = supabase.table('customers').update({'bot_paused_until': pause_until.isoformat()}).eq('store_id', store_id).eq('phone_number', phone).execute()
+        
+        return {"status": "success", "message": f"Bot paused for {phone} until {pause_until}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/callback")
 async def salla_callback(
@@ -2118,31 +2132,26 @@ async def test_ai(store_id: str, data: dict):
 
 
 # افترض أن لديك راوتر أو تطبيق FastAPI
-@app.post("/api/chat/stop-bot/{store_id}/{phone}")
-async def stop_bot_for_user(store_id: str, phone: str):
-    try:
-        # حساب وقت الإيقاف (مثلاً لمدة ساعة من الآن)
-        pause_until = datetime.utcnow() + timedelta(hours=1)
-        
-        # هنا ستقوم بتحديث قاعدة بياناتك (مثال باستخدام Supabase)
-        # response = supabase.table('customers').update({'bot_paused_until': pause_until.isoformat()}).eq('store_id', store_id).eq('phone_number', phone).execute()
-        
-        return {"status": "success", "message": f"Bot paused for {phone} until {pause_until}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 # ... (بقية الكود الخاص بك) ...
 
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
-    # التأكد من وجود الملف قبل محاولة فتحه لتجنب انهيار السيرفر
     file_path = "index.html"
     if os.path.exists(file_path):
-        return FileResponse(file_path)
+        # إضافة ترويسات لمنع التخزين المؤقت (Cache-Control) لضمان رؤية التعديلات الجديدة
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+        return FileResponse(file_path, headers=headers)
     else:
-        logger.error("❌ ملف index.html غير موجود في الجذر!")
+        logger.error("❌ ملف index.html غير موجود!")
         return HTMLResponse(content="<h1>خطأ: ملف واجهة المستخدم مفقود</h1>", status_code=404)
+"<h1>خطأ: ملف واجهة المستخدم مفقود</h1>", status_code=404)
 
 @app.get("/health")
 def health_check():
